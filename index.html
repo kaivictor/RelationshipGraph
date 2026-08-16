@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Family Tree</title>
+    <script>
+      // Protect window.fetch from being overwritten by polyfills (e.g., whatwg-fetch used by html-to-image)
+      try {
+        const originalFetch = window.fetch;
+        Object.defineProperty(window, 'fetch', {
+          get: function() { return originalFetch; },
+          set: function(val) { console.warn('Ignored attempt to overwrite window.fetch'); },
+          configurable: true
+        });
+      } catch (e) {
+        console.error('Failed to protect window.fetch', e);
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

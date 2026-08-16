@@ -1,0 +1,5 @@
+{
+  "name": "Family Tree Builder",
+  "description": "A family tree application centered around 'Self', allowing users to add relatives, view details, and export/import data and images.",
+  "requestFramePermissions": []
+}

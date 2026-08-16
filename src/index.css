@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+/* 属性值自动水平滚动动画（来回滚动） */
+@keyframes auto-scroll-x {
+  0%, 15% { transform: translateX(0); }
+  45%, 55% { transform: translateX(calc(-100% + var(--scroll-width, 0px))); }
+  85%, 100% { transform: translateX(0); }
+}
+
+.auto-scroll-text {
+  display: inline-block;
+  white-space: nowrap;
+  animation: auto-scroll-x 6s ease-in-out infinite;
+}
+
