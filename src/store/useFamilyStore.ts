@@ -12,29 +12,87 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import dagre from 'dagre';
 import { calculateRelationships } from '../utils/relationship';
+import {
+  exportToJSON,
+  exportToXML,
+  exportToCSV,
+  importFromJSON,
+  importFromXML,
+  type ExportData,
+} from '../utils/dataSerializer';
+
+// 格式分发：导出
+function exportToFormat(data: ExportData, format: 'json' | 'xml' | 'csv'): string {
+  if (format === 'xml') return exportToXML(data);
+  if (format === 'csv') return exportToCSV(data);
+  return exportToJSON(data);
+}
+
+// 格式分发：导入（CSV 不支持导入）
+function importFromFormat(text: string, format: 'json' | 'xml'): ExportData {
+  if (format === 'xml') return importFromXML(text);
+  return importFromJSON(text);
+}
 
 export type Gender = 'male' | 'female' | 'unknown';
 
 export type PersonData = {
   name: string;
   namePinyin?: string;
-  formerName?: string;
-  relationship: string;
-  popularName?: string;
+  formerName?: string[]; // 多值，逗号连接展示
+  relationship: string; // 保持单值（系统计算/手动覆盖），但允许用“，”分隔多个
+  popularName?: string[]; // 多值，逗号连接展示
   avatar: string;
   birthDate: string;
   gender: Gender;
   education?: string;
-  phone?: string;
-  qq?: string;
-  wechat?: string;
-  email?: string;
-  address?: string;
-  licensePlate?: string;
+  phone?: string[]; // 多值，换行展示
+  qq?: string[];
+  wechat?: string[];
+  email?: string[];
+  address?: string[];
+  licensePlate?: string[];
+  // 社交媒体（多值，换行展示）
+  bilibili?: string[];
+  discord?: string[];
+  reddit?: string[];
+  threads?: string[];
+  whatsapp?: string[];
+  douyin?: string[];
+  twitter?: string[];
+  xiaohongshu?: string[];
   customFieldValues?: Record<string, string>;
   isSelf?: boolean;
-  customAttributes?: { key: string; value: string }[];
+  customAttributes?: { key: string; value: string; hidden?: boolean }[];
+  // 个人级字段显隐覆盖：key 为字段名，value 为是否显示。未设置时使用全局设置
+  fieldVisibility?: Record<string, boolean>;
+  deceased?: boolean;
+  deathReason?: string;
+  deathDate?: string; // 格式 YYYY-MM-DD 或 YYYY-MM 或空
+  relationshipOverridden?: boolean;
 };
+
+// 多值字段名集合
+export const MULTI_VALUE_FIELDS: (keyof PersonData)[] = [
+  'formerName', 'popularName', 'phone', 'qq', 'wechat', 'email', 'address', 'licensePlate',
+  'bilibili', 'discord', 'reddit', 'threads', 'whatsapp', 'douyin', 'twitter', 'xiaohongshu',
+];
+
+// 将任意值归一化为数组（兼容旧版字符串数据）
+export function toArrayValue(v: unknown): string[] | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (Array.isArray(v)) return (v as unknown[]).map((x) => String(x));
+  const s = String(v).trim();
+  if (s === '') return undefined;
+  // 旧字符串按逗号分隔
+  return s.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+}
+
+// 取首个值用于单值展示场景
+export function firstValue(v: unknown): string {
+  const arr = toArrayValue(v);
+  return arr && arr.length > 0 ? arr[0] : '';
+}
 
 export type PersonNode = Node<PersonData>;
 
@@ -55,10 +113,49 @@ export type DisplaySettings = {
   showEmail: boolean;
   showAddress: boolean;
   showLicensePlate: boolean;
+  // 社交媒体显示开关
+  showBilibili: boolean;
+  showDiscord: boolean;
+  showReddit: boolean;
+  showThreads: boolean;
+  showWhatsapp: boolean;
+  showDouyin: boolean;
+  showTwitter: boolean;
+  showXiaohongshu: boolean;
   fieldOrder: string[];
   customFields: CustomFieldDef[];
   customFieldVisibility: Record<string, boolean>;
+  // 已删除的内置字段（从详情面板和节点中移除，可恢复）
+  removedBuiltinFields: string[];
   verticalGapScale: number;
+  showGrayOnDisconnect: boolean;
+  showEdgeRelationship: boolean;
+  persistToBrowser: boolean;
+  deathDateReplaceBirth: boolean; // 离世日期代替出生日期
+};
+
+export type ViewportState = {
+  x: number;
+  y: number;
+  zoom: number;
+};
+
+// 边的数据类型
+export type EdgeData = {
+  type: 'spouse' | 'parent-child' | 'custom';
+  disconnected?: boolean;
+  customLabel?: string; // 自定义关系称谓（如同学、同事、朋友），相对于 source 端
+};
+
+// 撤销快照：记录某次「大操作」前的完整状态
+export type UndoSnapshot = {
+  label: string;
+  nodes: PersonNode[];
+  edges: Edge[];
+  grayedNodeIds: Set<string>;
+  selectedNodeId: string | null;
+  selectedEdgeId: string | null;
+  displaySettings: DisplaySettings;
 };
 
 const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
@@ -76,30 +173,88 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   showEmail: false,
   showAddress: false,
   showLicensePlate: false,
-  fieldOrder: ['phone', 'qq', 'wechat', 'email', 'address', 'licensePlate'],
+  // 社交媒体默认隐藏
+  showBilibili: false,
+  showDiscord: false,
+  showReddit: false,
+  showThreads: false,
+  showWhatsapp: false,
+  showDouyin: false,
+  showTwitter: false,
+  showXiaohongshu: false,
+  fieldOrder: ['phone', 'qq', 'wechat', 'email', 'address', 'licensePlate', 'bilibili', 'discord', 'reddit', 'threads', 'whatsapp', 'douyin', 'twitter', 'xiaohongshu'],
   customFields: [],
   customFieldVisibility: {},
+  removedBuiltinFields: [],
   verticalGapScale: 1,
+  showGrayOnDisconnect: true,
+  showEdgeRelationship: true,
+  persistToBrowser: true,
+  deathDateReplaceBirth: true,
 };
 
 interface FamilyState {
   nodes: PersonNode[];
   edges: Edge[];
   selectedNodeId: string | null;
+  selectedEdgeId: string | null;
   displaySettings: DisplaySettings;
+  grayedNodeIds: Set<string>;
+  viewport: ViewportState;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
   addPerson: (data: PersonData, position: { x: number; y: number }) => string;
   updatePerson: (id: string, data: Partial<PersonData>) => void;
-  deletePerson: (id: string) => void;
-  addRelative: (sourceId: string, type: 'father' | 'mother' | 'son' | 'daughter' | 'spouse', data: PersonData) => void;
+  /** 实时更新：仅更新节点数据，不push undo、不重算称谓，用于详情面板编辑即时生效 */
+  updatePersonLive: (id: string, data: Partial<PersonData>) => void;
+  deletePerson: (id: string, cascadeDescendants?: boolean) => void;
+  /**
+   * 计算删除某人时，可级联删除的晚辈集合。
+   * 规则：从该人出发向下遍历 parent-child 边，仅保留「只有这一条父辈线、且无其它长辈/同辈/配偶/自定义关系」的晚辈。
+   * 即：若某晚辈还有另一个父/母（未被删除）、或有配偶/兄弟/自定义关系，则不删。
+   * 返回的集合不含传入的 id 本身。
+   */
+  getDescendantsForCascade: (id: string) => string[];
+  addRelative: (sourceId: string, type: 'parent' | 'child' | 'spouse' | 'custom', data: PersonData, customLabel?: string) => void;
+  connectExisting: (sourceId: string, targetId: string, type: 'parent' | 'child' | 'spouse' | 'custom', customLabel?: string) => void;
   setSelectedNodeId: (id: string | null) => void;
+  setSelectedEdgeId: (id: string | null) => void;
   updateDisplaySettings: (patch: Partial<DisplaySettings>) => void;
+  disconnectEdge: (edgeId: string) => void;
+  reconnectEdge: (edgeId: string) => void;
+  /** 修改边的关系类型（parent-child/spouse/custom） */
+  updateEdgeType: (edgeId: string, newType: 'parent-child' | 'spouse' | 'custom', customLabel?: string) => void;
+  /** 修改边的某一端节点（'source' 或 'target'） */
+  updateEdgeEndpoint: (edgeId: string, end: 'source' | 'target', newNodeId: string) => void;
+  /** 交换边的两端（source<->target），用于反转方向 */
+  swapEdgeDirection: (edgeId: string) => void;
+  /** 删除边（彻底删除，区别于断开） */
+  deleteEdge: (edgeId: string) => void;
+  setAsSelf: (id: string) => void;
+  setViewport: (vp: ViewportState) => void;
+  clearBrowserData: () => void;
   layoutGraph: () => void;
   recalculateRelationships: () => void;
-  exportData: () => string;
-  importData: (jsonString: string) => void;
+  exportData: (format?: 'json' | 'xml' | 'csv') => string;
+  importData: (text: string, format?: 'json' | 'xml') => void;
+  /** 增量导入人物（独立人物，无关系），返回新增节点数 */
+  importPersonsIncremental: (persons: PersonData[]) => number;
+  // 连线模式
+  connectionMode: 'off' | 'auto' | 'parent-child' | 'spouse' | 'custom';
+  connectionCustomLabel: string;
+  connectFirstNodeId: string | null;
+  setConnectionMode: (mode: 'off' | 'auto' | 'parent-child' | 'spouse' | 'custom', customLabel?: string) => void;
+  /** 连线模式：点击节点。若已有起点则建立关系并重置；否则记录起点。返回是否完成一次连线 */
+  clickNodeInConnectMode: (nodeId: string) => { connected: boolean; edgeType?: string; reason?: string };
+  resetConnectSelection: () => void;
+  // 帮助页面
+  showHelpPage: boolean;
+  setShowHelpPage: (v: boolean) => void;
+  undoStack: UndoSnapshot[];
+  undo: () => void;
+  canUndo: () => boolean;
+  clearUndo: () => void;
 }
 
 const initialNodes: PersonNode[] = [
@@ -119,24 +274,127 @@ const initialNodes: PersonNode[] = [
 
 const initialEdges: Edge[] = [
   { id: 'e-n1-n2', source: 'n1', target: 'n2', data: { type: 'spouse' }, type: 'spouse' },
-  { id: 'e-n1-n3', source: 'n1', target: 'n3', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-n2-n3', source: 'n2', target: 'n3', data: { type: 'parent-child' }, type: 'straight' },
+  { id: 'e-n1-n3', source: 'n1', target: 'n3', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-n2-n3', source: 'n2', target: 'n3', data: { type: 'parent-child' }, type: 'parent-child' },
   { id: 'e-n3-n4', source: 'n3', target: 'n4', data: { type: 'spouse' }, type: 'spouse' },
-  { id: 'e-n3-n5', source: 'n3', target: 'n5', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-n4-n5', source: 'n4', target: 'n5', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-n3-n7', source: 'n3', target: 'n7', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-n4-n7', source: 'n4', target: 'n7', data: { type: 'parent-child' }, type: 'straight' },
+  { id: 'e-n3-n5', source: 'n3', target: 'n5', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-n4-n5', source: 'n4', target: 'n5', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-n3-n7', source: 'n3', target: 'n7', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-n4-n7', source: 'n4', target: 'n7', data: { type: 'parent-child' }, type: 'parent-child' },
   { id: 'e-n5-n6', source: 'n5', target: 'n6', data: { type: 'spouse' }, type: 'spouse' },
-  { id: 'e-n5-self', source: 'n5', target: 'self', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-n6-self', source: 'n6', target: 'self', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-n5-n9', source: 'n5', target: 'n9', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-n6-n9', source: 'n6', target: 'n9', data: { type: 'parent-child' }, type: 'straight' },
+  { id: 'e-n5-self', source: 'n5', target: 'self', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-n6-self', source: 'n6', target: 'self', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-n5-n9', source: 'n5', target: 'n9', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-n6-n9', source: 'n6', target: 'n9', data: { type: 'parent-child' }, type: 'parent-child' },
   { id: 'e-self-n10', source: 'self', target: 'n10', data: { type: 'spouse' }, type: 'spouse' },
-  { id: 'e-self-n11', source: 'self', target: 'n11', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-n10-n11', source: 'n10', target: 'n11', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-self-n12', source: 'self', target: 'n12', data: { type: 'parent-child' }, type: 'straight' },
-  { id: 'e-n10-n12', source: 'n10', target: 'n12', data: { type: 'parent-child' }, type: 'straight' },
+  { id: 'e-self-n11', source: 'self', target: 'n11', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-n10-n11', source: 'n10', target: 'n11', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-self-n12', source: 'self', target: 'n12', data: { type: 'parent-child' }, type: 'parent-child' },
+  { id: 'e-n10-n12', source: 'n10', target: 'n12', data: { type: 'parent-child' }, type: 'parent-child' },
 ];
+
+// 浏览器持久化 key
+const STORAGE_KEY = 'family-tree-state-v1';
+
+type PersistedState = {
+  nodes: PersonNode[];
+  edges: Edge[];
+  displaySettings: DisplaySettings;
+  viewport: ViewportState;
+};
+
+/**
+ * 从 localStorage 加载持久化状态
+ */
+function loadPersistedState(): PersistedState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data.nodes || !data.edges) return null;
+    const displaySettings = { ...DEFAULT_DISPLAY_SETTINGS, ...(data.displaySettings || {}) };
+    // 补全 fieldOrder 中缺失的内置字段（新版本新增的内置字段自动加入末尾）
+    const ALL_BUILTIN_KEYS = ['phone', 'qq', 'wechat', 'email', 'address', 'licensePlate', 'bilibili', 'discord', 'reddit', 'threads', 'whatsapp', 'douyin', 'twitter', 'xiaohongshu'];
+    const removedSet = new Set(displaySettings.removedBuiltinFields || []);
+    for (const k of ALL_BUILTIN_KEYS) {
+      if (!displaySettings.fieldOrder.includes(k) && !removedSet.has(k)) {
+        displaySettings.fieldOrder.push(k);
+      }
+    }
+    // 若上次关闭了"在浏览器中保存数据"，不加载持久化数据，使用示例数据
+    if (!displaySettings.persistToBrowser) return null;
+    return {
+      nodes: data.nodes,
+      edges: data.edges,
+      displaySettings,
+      viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
+    };
+  } catch (e) {
+    console.error('加载浏览器数据失败', e);
+    return null;
+  }
+}
+
+/**
+ * 保存状态到 localStorage（仅当 persistToBrowser 开启时）
+ */
+function savePersistedState(state: PersistedState) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.error('保存浏览器数据失败', e);
+  }
+}
+
+// 将单个节点的多值字段归一化为数组（兼容旧版字符串数据）
+function normalizeNodeData(node: PersonNode): PersonNode {
+  const data = { ...node.data } as Record<string, unknown>;
+  let changed = false;
+  for (const f of MULTI_VALUE_FIELDS) {
+    const v = data[f as string];
+    const arr = toArrayValue(v);
+    if (arr !== undefined) {
+      data[f as string] = arr;
+      changed = true;
+    } else if (v !== undefined && v !== null) {
+      // 空字符串等清空为 undefined
+      data[f as string] = undefined;
+      changed = true;
+    }
+  }
+  return changed ? { ...node, data: data as PersonData } : node;
+}
+
+function normalizeNodes(nodes: PersonNode[]): PersonNode[] {
+  return nodes.map(normalizeNodeData);
+}
+
+// 根据出生年月计算年龄（用于连线模式自动判断）
+// birthDate 格式：YYYY-MM 或 YYYY-MM-DD；deathDate 同上（若有则截止到离世时）
+function calcAgeFromBirth(birthDate: string, deathDate?: string): number | null {
+  if (!birthDate) return null;
+  const parts = birthDate.split('-');
+  const year = parseInt(parts[0], 10);
+  const month = parts[1] ? parseInt(parts[1], 10) : 1;
+  if (isNaN(year) || isNaN(month)) return null;
+  const ref = deathDate ? new Date(deathDate) : new Date();
+  if (isNaN(ref.getTime())) return null;
+  let age = ref.getFullYear() - year;
+  const refMonth = ref.getMonth() + 1;
+  if (refMonth < month || (refMonth === month && ref.getDate() < 1)) {
+    age--;
+  }
+  return age < 0 ? null : age;
+}
+
+// 初始：尝试从浏览器加载，否则用默认数据
+const persisted = loadPersistedState();
+const initialNodesResolved = persisted ? normalizeNodes(persisted.nodes) : applyRelativeYPositions(normalizeNodes(initialNodes));
+const initialEdgesResolved = persisted ? persisted.edges : initialEdges;
+const initialDisplaySettings = persisted ? persisted.displaySettings : DEFAULT_DISPLAY_SETTINGS;
+const initialViewport = persisted ? persisted.viewport : { x: 0, y: 0, zoom: 1 };
+// 首次加载（无持久化数据）时需要标记重新计算灰色节点
+const hasPersistedData = !!persisted;
 
 function resolveOverlaps(nodes: PersonNode[]): PersonNode[] {
   const NODE_WIDTH = 200; // 160 width + 40 gap
@@ -223,11 +481,131 @@ function applyRelativeYPositions(nodes: PersonNode[], gapScale: number = 1): Per
   return resolveOverlaps(nodesWithY);
 }
 
-export const useFamilyStore = create<FamilyState>((set, get) => ({
-  nodes: applyRelativeYPositions(initialNodes),
-  edges: initialEdges,
+/**
+ * 计算因"断开关系"而需要变灰的节点。
+ *
+ * 自己（isSelf）通过 data.isSelf 标记动态确定，支持"把这个人设为我"功能。
+ *
+ * 核心问题：自己和配偶共享子女时，仅靠连通性无法判断配偶是否"被切断"
+ * （配偶仍可通过子女从自己到达）。因此按边类型做定向遍历：
+ *
+ * - 配偶边断开：far = 非自己一侧的配偶。从 far 向上（父母）和 sideways（其他配偶）遍历，
+ *   不向下（不遍历子女，因为子女是共享的、不变灰）。
+ * - 父子边断开（source=父母，target=子女）：far = 子女。从 far 向下（子女）和 sideways（配偶）遍历，
+ *   不向上（不遍历父母，因为另一位父母可能仍与自己有关系）。
+ *
+ * "同事例外"：若某节点与自己存在不经过 far 的其他路径（例如前妻父亲同时是自己的同事），
+ * 则该节点及其长辈不变灰。通过计算 selfComponentWithoutFar（从自己出发、不经过 far 的可达集）来实现。
+ */
+function computeGrayedNodes(
+  nodes: PersonNode[],
+  edges: Edge[],
+  showGray: boolean
+): Set<string> {
+  if (!showGray) return new Set();
+  const selfNode = nodes.find((n) => n.data.isSelf);
+  if (!selfNode) return new Set();
+  const selfId = selfNode.id;
+
+  const disconnectedEdges = edges.filter((e) => (e.data as EdgeData)?.disconnected);
+  if (disconnectedEdges.length === 0) return new Set();
+
+  const isActive = (e: Edge) => !((e.data as EdgeData)?.disconnected);
+
+  // 阶段1：从 self 出发，通过所有 active 边双向 BFS，得到"self 可达集"
+  // 该集合中的节点无论如何都不应变灰（self 与它们仍有 active 路径）
+  const selfReachable = new Set<string>();
+  {
+    selfReachable.add(selfId);
+    const queue: string[] = [selfId];
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      for (const e of edges) {
+        if (!isActive(e)) continue;
+        let next: string | null = null;
+        if (e.source === node) next = e.target;
+        else if (e.target === node) next = e.source;
+        if (!next) continue;
+        if (!selfReachable.has(next)) {
+          selfReachable.add(next);
+          queue.push(next);
+        }
+      }
+    }
+  }
+
+  const graySet = new Set<string>();
+
+  // 阶段2：对每条断开边，选择"远离 self"的端点作为 far，从 far 全方向 BFS 标记候选灰色节点
+  for (const edge of disconnectedEdges) {
+    const sIn = selfReachable.has(edge.source);
+    const tIn = selfReachable.has(edge.target);
+    // 两端都可达 self：此边断开不影响连通性，跳过
+    if (sIn && tIn) continue;
+    // 选择 far：不在 selfReachable 的端点；若两端都不在则都处理
+    const farCandidates: string[] = [];
+    if (!sIn) farCandidates.push(edge.source);
+    if (!tIn) farCandidates.push(edge.target);
+
+    for (const far of farCandidates) {
+      if (far === selfId) continue;
+      // 从 far 出发全方向 BFS（仅 active edges），收集所有可达节点为候选灰色
+      const visited = new Set<string>();
+      const queue: string[] = [far];
+      visited.add(far);
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        graySet.add(node);
+        for (const e of edges) {
+          if (!isActive(e)) continue;
+          let next: string | null = null;
+          if (e.source === node) next = e.target;
+          else if (e.target === node) next = e.source;
+          if (!next) continue;
+          if (visited.has(next)) continue;
+          visited.add(next);
+          queue.push(next);
+        }
+      }
+    }
+  }
+
+  // 阶段3：修复——从 graySet 中移除所有 selfReachable 中的节点
+  // 这一步保证任何能通过 active 路径回到 self 的节点（含同事例外、共同祖先等）都不会被误置灰
+  for (const id of selfReachable) {
+    graySet.delete(id);
+  }
+
+  return graySet;
+}
+
+export const useFamilyStore = create<FamilyState>((set, get) => {
+  const MAX_UNDO = 30;
+  // 在「大操作」前调用：将当前状态压入撤销栈
+  const pushUndo = (label: string) => {
+    const { nodes, edges, grayedNodeIds, selectedNodeId, selectedEdgeId, displaySettings, undoStack } = get();
+    set({
+      undoStack: [
+        ...undoStack,
+        { label, nodes, edges, grayedNodeIds, selectedNodeId, selectedEdgeId, displaySettings },
+      ].slice(-MAX_UNDO),
+    });
+  };
+  return {
+  nodes: initialNodesResolved,
+  edges: initialEdgesResolved,
   selectedNodeId: null,
-  displaySettings: DEFAULT_DISPLAY_SETTINGS,
+  selectedEdgeId: null,
+  displaySettings: initialDisplaySettings,
+  grayedNodeIds: hasPersistedData
+    ? computeGrayedNodes(initialNodesResolved, initialEdgesResolved, initialDisplaySettings.showGrayOnDisconnect)
+    : new Set<string>(),
+  viewport: initialViewport,
+  undoStack: [],
+  connectionMode: 'off',
+  connectionCustomLabel: '',
+  connectFirstNodeId: null,
+  showHelpPage: false,
 
   onNodesChange: (changes) => {
     const currentNodes = get().nodes;
@@ -275,6 +653,7 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
   },
 
   updatePerson: (id, data) => {
+    pushUndo('修改属性');
     const updatedNodes = get().nodes.map((node) => {
       if (node.id === id) {
         return { ...node, data: { ...node.data, ...data } };
@@ -285,25 +664,93 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
     get().recalculateRelationships();
   },
 
-  deletePerson: (id) => {
-    if (id === 'self') return; // Cannot delete self
-    const filteredNodes = get().nodes.filter((node) => node.id !== id);
+  updatePersonLive: (id, data) => {
+    const updatedNodes = get().nodes.map((node) => {
+      if (node.id === id) {
+        return { ...node, data: { ...node.data, ...data } };
+      }
+      return node;
+    });
+    set({ nodes: applyRelativeYPositions(updatedNodes, get().displaySettings.verticalGapScale) });
+  },
+
+  deletePerson: (id, cascadeDescendants) => {
+    // 不能删除"自己"（通过 isSelf 标记判断，而非固定 ID）
+    const selfNode = get().nodes.find((n) => n.data.isSelf);
+    if (selfNode && selfNode.id === id) return;
+    pushUndo('删除人物');
+
+    // 计算需要删除的节点集合：自身 + （若级联）可级联的晚辈
+    const toDelete = new Set<string>([id]);
+    if (cascadeDescendants) {
+      get().getDescendantsForCascade(id).forEach((d) => toDelete.add(d));
+    }
+
+    const filteredNodes = get().nodes.filter((node) => !toDelete.has(node.id));
+    const newEdges = get().edges.filter(
+      (edge) => !toDelete.has(edge.source) && !toDelete.has(edge.target)
+    );
+    const { displaySettings } = get();
     set({
-      nodes: applyRelativeYPositions(filteredNodes, get().displaySettings.verticalGapScale),
-      edges: get().edges.filter((edge) => edge.source !== id && edge.target !== id),
-      selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId,
+      nodes: applyRelativeYPositions(filteredNodes, displaySettings.verticalGapScale),
+      edges: newEdges,
+      selectedNodeId: toDelete.has(get().selectedNodeId || '') ? null : get().selectedNodeId,
+      grayedNodeIds: computeGrayedNodes(filteredNodes, newEdges, displaySettings.showGrayOnDisconnect),
     });
     get().recalculateRelationships();
   },
 
-  addRelative: (sourceId, type, data) => {
+  getDescendantsForCascade: (id) => {
+    const { edges } = get();
+    // 仅考虑 parent-child 边：source=父母, target=子女
+    const childrenOf = (pid: string): string[] =>
+      edges
+        .filter((e) => e.data?.type === 'parent-child' && e.source === pid)
+        .map((e) => e.target);
+
+    // 某节点的「其它关系」：除来自 id 这一支的父辈外，是否还有别的连接
+    // otherEdgesOf(nodeId, excludedParentId): 该节点是否存在非「从 excludedParentId 指向它的 parent-child」的任何边
+    const hasOtherConnection = (nodeId: string, allowedParentId: string): boolean => {
+      return edges.some((e) => {
+        if (e.source === nodeId || e.target === nodeId) {
+          // 允许的唯一连接：parent-child 且 source=allowedParentId 且 target=nodeId
+          const isAllowedParentLink =
+            e.data?.type === 'parent-child' && e.source === allowedParentId && e.target === nodeId;
+          if (isAllowedParentLink) return false;
+          // 其它任何边（另一个父/母、配偶、兄弟、自定义、或作为别人的父母）都算「其它关系」
+          return true;
+        }
+        return false;
+      });
+    };
+
+    const result = new Set<string>();
+    // BFS 向下：仅延伸「只通过 id 这一系连接」的子女
+    const queue: { pid: string; viaParent: string }[] = childrenOf(id).map((c) => ({ pid: c, viaParent: id }));
+    const visited = new Set<string>([id]);
+    while (queue.length > 0) {
+      const { pid, viaParent } = queue.shift()!;
+      if (visited.has(pid)) continue;
+      visited.add(pid);
+      // 若该晚辈存在除「来自 viaParent 的父子边」之外的任何关系，则不删、也不继续向下
+      if (hasOtherConnection(pid, viaParent)) continue;
+      result.add(pid);
+      // 继续向下延伸其子女（同样规则）
+      childrenOf(pid).forEach((c) => queue.push({ pid: c, viaParent: pid }));
+    }
+    return Array.from(result);
+  },
+
+  addRelative: (sourceId, type, data, customLabel) => {
     const newId = uuidv4();
     const sourceNode = get().nodes.find((n) => n.id === sourceId);
     if (!sourceNode) return;
+    pushUndo('添加关系');
 
-    const isParent = type === 'father' || type === 'mother';
-    const isChild = type === 'son' || type === 'daughter';
+    const isParent = type === 'parent';
+    const isChild = type === 'child';
     const isSpouse = type === 'spouse';
+    const isCustom = type === 'custom';
 
     // Calculate position: Y is strictly based on birthDate, X is relative to source
     const position = {
@@ -321,8 +768,8 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
     let newEdges: Edge[] = [];
 
     if (isParent) {
-      newEdges.push({ id: `e-${newId}-${sourceId}`, source: newId, target: sourceId, data: { type: 'parent-child' }, type: 'straight' });
-      
+      newEdges.push({ id: `e-${newId}-${sourceId}`, source: newId, target: sourceId, data: { type: 'parent-child' }, type: 'parent-child' });
+
       // If source already has a parent, link the new parent to the existing parent as spouse
       const existingParentEdges = get().edges.filter(e => e.target === sourceId && e.data?.type === 'parent-child');
       existingParentEdges.forEach(e => {
@@ -336,8 +783,8 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
       });
 
     } else if (isChild) {
-      newEdges.push({ id: `e-${sourceId}-${newId}`, source: sourceId, target: newId, data: { type: 'parent-child' }, type: 'straight' });
-      
+      newEdges.push({ id: `e-${sourceId}-${newId}`, source: sourceId, target: newId, data: { type: 'parent-child' }, type: 'parent-child' });
+
       // If source has spouses, link them to the new child too
       const spouseEdges = get().edges.filter(e => e.data?.type === 'spouse' && (e.source === sourceId || e.target === sourceId));
       spouseEdges.forEach(e => {
@@ -347,13 +794,13 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
           source: spouseId,
           target: newId,
           data: { type: 'parent-child' },
-          type: 'straight'
+          type: 'parent-child'
         });
       });
 
     } else if (isSpouse) {
       newEdges.push({ id: `e-spouse-${sourceId}-${newId}`, source: sourceId, target: newId, data: { type: 'spouse' }, type: 'spouse' });
-      
+
       // If source has children, link the new spouse to the children
       const childEdges = get().edges.filter(e => e.source === sourceId && e.data?.type === 'parent-child');
       childEdges.forEach(e => {
@@ -362,8 +809,18 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
           source: newId,
           target: e.target,
           data: { type: 'parent-child' },
-          type: 'straight'
+          type: 'parent-child'
         });
+      });
+
+    } else if (isCustom) {
+      // 自定义关系（同学、同事、朋友等）：仅建立一条 custom 边，不传递血缘
+      newEdges.push({
+        id: `e-custom-${sourceId}-${newId}`,
+        source: sourceId,
+        target: newId,
+        data: { type: 'custom', customLabel: customLabel || '自定义' },
+        type: 'custom',
       });
     }
 
@@ -375,12 +832,87 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
     get().recalculateRelationships();
   },
 
+  // 从现有人物中添加关系：在两个已有节点之间建立边（逻辑同 addRelative，但不新建人物）
+  connectExisting: (sourceId, targetId, type, customLabel) => {
+    if (sourceId === targetId) return;
+    const sourceNode = get().nodes.find(n => n.id === sourceId);
+    const targetNode = get().nodes.find(n => n.id === targetId);
+    if (!sourceNode || !targetNode) return;
+
+    const edges = get().edges;
+    const exists = (a: string, b: string, edgeType: string) =>
+      edges.some(e =>
+        e.data?.type === edgeType &&
+        ((e.source === a && e.target === b) || (e.source === b && e.target === a))
+      );
+
+    let newEdges: Edge[] = [];
+
+    if (type === 'parent') {
+      // target 成为 source 的父母（parent -> child）
+      if (!exists(targetId, sourceId, 'parent-child')) {
+        newEdges.push({ id: `e-${targetId}-${sourceId}`, source: targetId, target: sourceId, data: { type: 'parent-child' }, type: 'parent-child' });
+      }
+      // 若 source 已有父母，将新父母与已有父母连接为配偶
+      const existingParents = edges.filter(e => e.target === sourceId && e.data?.type === 'parent-child');
+      existingParents.forEach(e => {
+        if (e.source !== targetId && !exists(e.source, targetId, 'spouse')) {
+          newEdges.push({ id: `e-spouse-${e.source}-${targetId}`, source: e.source, target: targetId, data: { type: 'spouse' }, type: 'spouse' });
+        }
+      });
+    } else if (type === 'child') {
+      // target 成为 source 的子女（parent -> child）
+      if (!exists(sourceId, targetId, 'parent-child')) {
+        newEdges.push({ id: `e-${sourceId}-${targetId}`, source: sourceId, target: targetId, data: { type: 'parent-child' }, type: 'parent-child' });
+      }
+      // source 的配偶也成为 target 的父母
+      const spouses = edges.filter(e => e.data?.type === 'spouse' && (e.source === sourceId || e.target === sourceId));
+      spouses.forEach(e => {
+        const spouseId = e.source === sourceId ? e.target : e.source;
+        if (spouseId !== targetId && !exists(spouseId, targetId, 'parent-child')) {
+          newEdges.push({ id: `e-${spouseId}-${targetId}`, source: spouseId, target: targetId, data: { type: 'parent-child' }, type: 'parent-child' });
+        }
+      });
+    } else if (type === 'spouse') {
+      if (!exists(sourceId, targetId, 'spouse')) {
+        newEdges.push({ id: `e-spouse-${sourceId}-${targetId}`, source: sourceId, target: targetId, data: { type: 'spouse' }, type: 'spouse' });
+      }
+      // source 的子女也成为 target 的子女
+      const children = edges.filter(e => e.source === sourceId && e.data?.type === 'parent-child');
+      children.forEach(e => {
+        if (e.target !== targetId && !exists(targetId, e.target, 'parent-child')) {
+          newEdges.push({ id: `e-${targetId}-${e.target}`, source: targetId, target: e.target, data: { type: 'parent-child' }, type: 'parent-child' });
+        }
+      });
+    } else if (type === 'custom') {
+      if (!exists(sourceId, targetId, 'custom')) {
+        newEdges.push({ id: `e-custom-${sourceId}-${targetId}`, source: sourceId, target: targetId, data: { type: 'custom', customLabel: customLabel || '自定义' }, type: 'custom' });
+      }
+    }
+
+    if (newEdges.length === 0) return;
+    pushUndo('连接现有关系');
+    set({ edges: [...get().edges, ...newEdges] });
+    get().recalculateRelationships();
+  },
+
   recalculateRelationships: () => {
     const { nodes, edges } = get();
-    const relationships = calculateRelationships(nodes, edges);
-    
+    // 收集用户手动覆盖的称谓
+    const overrides = new Map<string, string>();
+    nodes.forEach(node => {
+      if (node.data.relationshipOverridden && node.data.relationship) {
+        overrides.set(node.id, node.data.relationship);
+      }
+    });
+    const relationships = calculateRelationships(nodes, edges, overrides);
+
     const newNodes = nodes.map(node => {
       const rel = relationships.get(node.id);
+      // 如果用户手动覆盖了称谓，保留用户的设置，不改变 relationshipOverridden 标志
+      if (node.data.relationshipOverridden) {
+        return node;
+      }
       if (rel && rel !== node.data.relationship) {
         return { ...node, data: { ...node.data, relationship: rel } };
       }
@@ -391,6 +923,7 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
   },
 
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
+  setSelectedEdgeId: (id) => set({ selectedEdgeId: id }),
 
   updateDisplaySettings: (patch) => {
     const oldSettings = get().displaySettings;
@@ -400,6 +933,170 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
     if (patch.verticalGapScale !== undefined && patch.verticalGapScale !== oldSettings.verticalGapScale) {
       set({ nodes: applyRelativeYPositions(get().nodes, newSettings.verticalGapScale) });
     }
+    // 变灰设置变化时重新计算灰色节点
+    if (patch.showGrayOnDisconnect !== undefined) {
+      const { nodes, edges } = get();
+      set({ grayedNodeIds: computeGrayedNodes(nodes, edges, patch.showGrayOnDisconnect) });
+    }
+  },
+
+  disconnectEdge: (edgeId) => {
+    pushUndo('断开关系');
+    const edges = get().edges.map((e) =>
+      e.id === edgeId ? { ...e, data: { ...e.data, disconnected: true } } : e
+    );
+    const { nodes, displaySettings } = get();
+    set({
+      edges,
+      grayedNodeIds: computeGrayedNodes(nodes, edges, displaySettings.showGrayOnDisconnect),
+    });
+  },
+
+  reconnectEdge: (edgeId) => {
+    pushUndo('恢复关系');
+    const edges = get().edges.map((e) =>
+      e.id === edgeId ? { ...e, data: { ...e.data, disconnected: false } } : e
+    );
+    const { nodes, displaySettings } = get();
+    set({
+      edges,
+      grayedNodeIds: computeGrayedNodes(nodes, edges, displaySettings.showGrayOnDisconnect),
+    });
+  },
+
+  updateEdgeType: (edgeId, newType, customLabel) => {
+    pushUndo('修改关系类型');
+    const edges = get().edges.map((e) => {
+      if (e.id !== edgeId) return e;
+      const newData: EdgeData = { ...(e.data as EdgeData), type: newType };
+      if (newType === 'custom') {
+        newData.customLabel = customLabel || '自定义';
+      } else {
+        delete newData.customLabel;
+      }
+      return { ...e, data: newData, type: newType };
+    });
+    const { nodes, displaySettings } = get();
+    set({
+      edges,
+      grayedNodeIds: computeGrayedNodes(nodes, edges, displaySettings.showGrayOnDisconnect),
+    });
+    get().recalculateRelationships();
+  },
+
+  updateEdgeEndpoint: (edgeId, end, newNodeId) => {
+    const edge = get().edges.find((e) => e.id === edgeId);
+    if (!edge) return;
+    // 不能与现有端点相同
+    const otherEndId = end === 'source' ? edge.target : edge.source;
+    if (newNodeId === otherEndId) return;
+    pushUndo('修改连线端点');
+    const updatedEdge = {
+      ...edge,
+      source: end === 'source' ? newNodeId : edge.source,
+      target: end === 'target' ? newNodeId : edge.target,
+      id: `e-${end === 'source' ? newNodeId : edge.source}-${end === 'target' ? newNodeId : edge.target}`,
+    };
+    // 去重：若新端点组合已存在同类型边，则删除当前边
+    const newSourceId = updatedEdge.source;
+    const newTargetId = updatedEdge.target;
+    const newType = (updatedEdge.data as EdgeData)?.type;
+    const duplicateExists = get().edges.some(
+      (e) => e.id !== edgeId && e.source === newSourceId && e.target === newTargetId && (e.data as EdgeData)?.type === newType
+    );
+    const finalEdges = duplicateExists
+      ? get().edges.filter((e) => e.id !== edgeId)
+      : get().edges.map((e) => (e.id === edgeId ? updatedEdge : e));
+    const { nodes, displaySettings } = get();
+    set({
+      edges: finalEdges,
+      grayedNodeIds: computeGrayedNodes(nodes, finalEdges, displaySettings.showGrayOnDisconnect),
+      selectedEdgeId: duplicateExists ? null : updatedEdge.id,
+    });
+    get().recalculateRelationships();
+  },
+
+  swapEdgeDirection: (edgeId) => {
+    pushUndo('反转连线方向');
+    const edges = get().edges.map((e) => {
+      if (e.id !== edgeId) return e;
+      return {
+        ...e,
+        source: e.target,
+        target: e.source,
+        id: `e-${e.target}-${e.source}`,
+      };
+    });
+    const { nodes, displaySettings } = get();
+    set({
+      edges,
+      grayedNodeIds: computeGrayedNodes(nodes, edges, displaySettings.showGrayOnDisconnect),
+    });
+    get().recalculateRelationships();
+  },
+
+  deleteEdge: (edgeId) => {
+    pushUndo('删除关系');
+    const edges = get().edges.filter((e) => e.id !== edgeId);
+    const { nodes, displaySettings } = get();
+    set({
+      edges,
+      grayedNodeIds: computeGrayedNodes(nodes, edges, displaySettings.showGrayOnDisconnect),
+      selectedEdgeId: null,
+    });
+    get().recalculateRelationships();
+  },
+
+  setAsSelf: (id) => {
+    pushUndo('设为自己');
+    // 切换"自己"：移除其他节点的 isSelf，标记目标节点为 isSelf，并重新计算灰色节点
+    const nodes = get().nodes.map((n) => ({
+      ...n,
+      data: { ...n.data, isSelf: n.id === id },
+    }));
+    const { displaySettings, edges } = get();
+    set({
+      nodes,
+      grayedNodeIds: computeGrayedNodes(nodes, edges, displaySettings.showGrayOnDisconnect),
+    });
+    get().recalculateRelationships();
+  },
+
+  setViewport: (vp) => {
+    set({ viewport: vp });
+  },
+
+  clearBrowserData: () => {
+    pushUndo('清除数据');
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {
+      console.error('清除浏览器数据失败', e);
+    }
+    // 清除后只保留一个"自己"节点，无示例数据、无默认性别（避免性别预设）
+    const selfOnly: PersonNode[] = [
+      {
+        id: 'self',
+        type: 'person',
+        position: { x: 0, y: 0 },
+        data: {
+          name: '我',
+          avatar: '',
+          relationship: '自己',
+          birthDate: '',
+          gender: 'unknown',
+          isSelf: true,
+        },
+      },
+    ];
+    set({
+      nodes: selfOnly,
+      edges: [],
+      selectedNodeId: null,
+      displaySettings: { ...DEFAULT_DISPLAY_SETTINGS, persistToBrowser: true },
+      grayedNodeIds: new Set<string>(),
+      viewport: { x: 0, y: 0, zoom: 1 },
+    });
   },
 
   layoutGraph: () => {
@@ -417,6 +1114,9 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
     edges.forEach((edge) => {
       if (edge.data?.type === 'spouse') {
         dagreGraph.setEdge(edge.source, edge.target, { minlen: 0, weight: 10 });
+      } else if (edge.data?.type === 'custom') {
+        // 自定义关系权重低，不影响血缘层级布局
+        dagreGraph.setEdge(edge.source, edge.target, { minlen: 1, weight: 0 });
       } else {
         dagreGraph.setEdge(edge.source, edge.target, { minlen: 1, weight: 1 });
       }
@@ -438,26 +1138,188 @@ export const useFamilyStore = create<FamilyState>((set, get) => ({
     set({ nodes: applyRelativeYPositions(newNodes, get().displaySettings.verticalGapScale) });
   },
 
-  exportData: () => {
-    const { nodes, edges, displaySettings } = get();
-    return JSON.stringify({ nodes, edges, displaySettings }, null, 2);
+  exportData: (format) => {
+    const { nodes, edges, displaySettings, viewport } = get();
+    return exportToFormat({ nodes, edges, displaySettings, viewport }, format || 'json');
   },
 
-  importData: (jsonString) => {
+  importData: (text, format) => {
     try {
-      const data = JSON.parse(jsonString);
-      if (data.nodes && data.edges) {
-        set({
-          nodes: data.nodes,
-          edges: data.edges,
-          selectedNodeId: null,
-          displaySettings: { ...DEFAULT_DISPLAY_SETTINGS, ...(data.displaySettings || {}) },
-        });
-        get().recalculateRelationships();
-      }
+      const data = importFromFormat(text, format || 'json');
+      pushUndo('导入数据');
+      set({
+        nodes: normalizeNodes(data.nodes),
+        edges: data.edges,
+        selectedNodeId: null,
+        displaySettings: { ...DEFAULT_DISPLAY_SETTINGS, ...(data.displaySettings || {}) },
+        viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
+      });
+      get().recalculateRelationships();
     } catch (e) {
       console.error('Failed to import data', e);
       alert('导入失败，请检查文件格式是否正确。');
     }
   },
-}));
+
+  // 增量导入人物：作为独立节点添加（无关系），保留现有数据
+  importPersonsIncremental: (persons) => {
+    if (!persons || persons.length === 0) return 0;
+    pushUndo('增量导入人物');
+    const existing = get().nodes;
+    // 计算放置位置：在现有节点最大 x+y 附近散开
+    let maxX = 0, maxY = 0;
+    for (const n of existing) {
+      const w = (n.measured?.width ?? n.width ?? 180) as number;
+      const h = (n.measured?.height ?? n.height ?? 120) as number;
+      maxX = Math.max(maxX, n.position.x + w);
+      maxY = Math.max(maxY, n.position.y + h);
+    }
+    const startX = maxX + 60;
+    const startY = maxY + 60;
+    const newNodes: PersonNode[] = persons.map((p, i) => ({
+      id: `imp-${uuidv4()}`,
+      type: 'person',
+      position: { x: startX + (i % 5) * 220, y: startY + Math.floor(i / 5) * 160 },
+      data: { ...p },
+    }));
+    set({ nodes: [...existing, ...newNodes] });
+    get().recalculateRelationships();
+    return newNodes.length;
+  },
+
+  setConnectionMode: (mode, customLabel) => {
+    set({
+      connectionMode: mode,
+      connectionCustomLabel: customLabel || '',
+      connectFirstNodeId: null,
+      // 进入/退出连线模式时清除选中节点/边，避免面板干扰
+      selectedNodeId: mode === 'off' ? get().selectedNodeId : null,
+      selectedEdgeId: mode === 'off' ? get().selectedEdgeId : null,
+    });
+  },
+
+  resetConnectSelection: () => set({ connectFirstNodeId: null }),
+
+  // 连线模式下点击节点
+  clickNodeInConnectMode: (nodeId) => {
+    const state = get();
+    const mode = state.connectionMode;
+    if (mode === 'off') return { connected: false };
+
+    // 第一次点击：记录起点
+    if (!state.connectFirstNodeId) {
+      set({ connectFirstNodeId: nodeId });
+      return { connected: false };
+    }
+
+    // 再次点击同一节点：取消选择
+    if (state.connectFirstNodeId === nodeId) {
+      set({ connectFirstNodeId: null });
+      return { connected: false, reason: '取消选择' };
+    }
+
+    const aId = state.connectFirstNodeId;
+    const bId = nodeId;
+    const aNode = state.nodes.find((n) => n.id === aId);
+    const bNode = state.nodes.find((n) => n.id === bId);
+    if (!aNode || !bNode) {
+      set({ connectFirstNodeId: null });
+      return { connected: false, reason: '节点不存在' };
+    }
+
+    // 根据模式决定关系类型
+    let edgeType: 'parent' | 'child' | 'spouse' | 'custom';
+    let resultEdgeType = '';
+    let reason = '';
+
+    if (mode === 'parent-child') {
+      // A 为长辈，B 为晚辈：A -> B 父子
+      edgeType = 'child'; // connectExisting(sourceId=A, targetId=B, 'child') 表示 B 是 A 的子女
+      resultEdgeType = 'parent-child';
+      reason = '父子/母子';
+    } else if (mode === 'spouse') {
+      edgeType = 'spouse';
+      resultEdgeType = 'spouse';
+      reason = '爱人';
+    } else if (mode === 'custom') {
+      edgeType = 'custom';
+      resultEdgeType = 'custom';
+      reason = state.connectionCustomLabel || '自定义';
+    } else {
+      // auto：根据年龄差判断
+      const ageA = calcAgeFromBirth(aNode.data.birthDate, aNode.data.deathDate);
+      const ageB = calcAgeFromBirth(bNode.data.birthDate, bNode.data.deathDate);
+      if (ageA === null || ageB === null) {
+        // 年龄未知，无法自动判断，回退为爱人
+        edgeType = 'spouse';
+        resultEdgeType = 'spouse';
+        reason = '年龄未知，按爱人处理';
+      } else {
+        const diff = Math.abs(ageA - ageB);
+        if (diff > 15) {
+          // 年龄差>15：年长者为父母
+          if (ageA >= ageB) {
+            edgeType = 'child'; // A 是父母，B 是子女
+          } else {
+            edgeType = 'parent'; // B 是父母，A 是子女
+          }
+          resultEdgeType = 'parent-child';
+          reason = `年龄差${diff}，父母子女`;
+        } else {
+          edgeType = 'spouse';
+          resultEdgeType = 'spouse';
+          reason = `年龄差${diff}，爱人`;
+        }
+      }
+    }
+
+    // 建立关系
+    get().connectExisting(aId, bId, edgeType, mode === 'custom' ? state.connectionCustomLabel : undefined);
+
+    // 完成一次连线后重置起点（保持在连线模式，便于连续连线）
+    set({ connectFirstNodeId: null });
+    return { connected: true, edgeType: resultEdgeType, reason };
+  },
+
+  setShowHelpPage: (v) => set({ showHelpPage: v }),
+
+  undo: () => {
+    const { undoStack } = get();
+    if (undoStack.length === 0) return;
+    const snapshot = undoStack[undoStack.length - 1];
+    set({
+      nodes: snapshot.nodes,
+      edges: snapshot.edges,
+      grayedNodeIds: snapshot.grayedNodeIds,
+      selectedNodeId: snapshot.selectedNodeId,
+      selectedEdgeId: snapshot.selectedEdgeId,
+      displaySettings: snapshot.displaySettings,
+      undoStack: undoStack.slice(0, -1),
+    });
+  },
+
+  canUndo: () => get().undoStack.length > 0,
+
+  clearUndo: () => set({ undoStack: [] }),
+  };
+});
+
+// 浏览器持久化：监听 nodes/edges/displaySettings/viewport 变化，自动保存
+// （仅当 displaySettings.persistToBrowser 开启时）
+useFamilyStore.subscribe((state) => {
+  if (!state.displaySettings.persistToBrowser) {
+    // 关闭了浏览器保存：清除已保存的数据，刷新后会加载示例数据
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {
+      console.error('清除浏览器数据失败', e);
+    }
+    return;
+  }
+  savePersistedState({
+    nodes: state.nodes,
+    edges: state.edges,
+    displaySettings: state.displaySettings,
+    viewport: state.viewport,
+  });
+});
