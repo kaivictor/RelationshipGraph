@@ -1,5 +1,5 @@
 import { Handle, Position } from '@xyflow/react';
-import { PersonData, useFamilyStore, toArrayValue } from '../store/useFamilyStore';
+import { PersonData, useRelationshipStore, toArrayValue } from '../store/useRelationshipStore';
 import { User, UserRound, UserRoundSearch } from 'lucide-react';
 import {
   PhoneIcon,
@@ -106,8 +106,8 @@ const ICON_FIELDS = {
 };
 
 export function PersonNodeComponent({ id, data, selected }: { id: string; data: PersonData; selected: boolean }) {
-  const displaySettings = useFamilyStore((state) => state.displaySettings);
-  const isGrayed = useFamilyStore((state) => state.grayedNodeIds.has(id));
+  const displaySettings = useRelationshipStore((state) => state.displaySettings);
+  const isGrayed = useRelationshipStore((state) => state.grayedNodeIds.has(id));
 
   const age = displaySettings.showAge ? calculateAge(data.birthDate, data.deathDate) : null;
   const showAgeNum = age !== null && age >= 0;

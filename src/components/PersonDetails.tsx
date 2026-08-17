@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useFamilyStore, PersonData, Gender, toArrayValue } from '../store/useFamilyStore';
+import { useRelationshipStore, PersonData, Gender, toArrayValue } from '../store/useRelationshipStore';
 import { X, Plus, Trash2, Save, UserCheck, Heart, Upload, Loader2, Eye, EyeOff } from 'lucide-react';
 import { compressImageToBase64 } from '../utils/imageCompress';
 import { CollapsibleSection } from './CollapsibleSection';
@@ -131,10 +131,10 @@ function Field({
 
 export function PersonDetails() {
   const { nodes, selectedNodeId, setSelectedNodeId, updatePerson, updatePersonLive, deletePerson, addRelative, connectExisting, setAsSelf, getDescendantsForCascade } =
-    useFamilyStore();
-  const customFields = useFamilyStore((s) => s.displaySettings.customFields);
-  const displaySettings = useFamilyStore((s) => s.displaySettings);
-  const removedBuiltinFields = useFamilyStore((s) => s.displaySettings.removedBuiltinFields);
+    useRelationshipStore();
+  const customFields = useRelationshipStore((s) => s.displaySettings.customFields);
+  const displaySettings = useRelationshipStore((s) => s.displaySettings);
+  const removedBuiltinFields = useRelationshipStore((s) => s.displaySettings.removedBuiltinFields);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
 
@@ -407,8 +407,8 @@ export function PersonDetails() {
                     liveUpdate({relationshipOverridden: false });
                     // 立即重新计算
                     setTimeout(() => {
-                      useFamilyStore.getState().recalculateRelationships();
-                      const updatedNode = useFamilyStore.getState().nodes.find(n => n.id === selectedNode?.id);
+                      useRelationshipStore.getState().recalculateRelationships();
+                      const updatedNode = useRelationshipStore.getState().nodes.find(n => n.id === selectedNode?.id);
                       if (updatedNode) setFormData({ ...updatedNode.data, relationshipOverridden: false });
                     }, 50);
                   }}

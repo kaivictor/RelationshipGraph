@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useFamilyStore, EdgeData, PersonNode } from '../store/useFamilyStore';
+import { useRelationshipStore, EdgeData, PersonNode } from '../store/useRelationshipStore';
 import { X, Unlink, Link2, Trash2, ArrowRight, ArrowLeftRight, User, UserRound, UserRoundSearch } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -71,7 +71,7 @@ export function EdgeDetails() {
     disconnectEdge,
     reconnectEdge,
     deleteEdge,
-  } = useFamilyStore();
+  } = useRelationshipStore();
 
   // 本地编辑状态：当前正在编辑的端（source/target）
   const [editingEnd, setEditingEnd] = useState<'source' | 'target' | null>(null);

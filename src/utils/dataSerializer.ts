@@ -4,9 +4,9 @@
  * - CSV：仅人物信息 + 关系（父亲ID/母亲ID/配偶ID），不包含设置
  */
 import type { Edge } from '@xyflow/react';
-import type { PersonNode, DisplaySettings, ViewportState, EdgeData, PersonData } from '../store/useFamilyStore';
+import type { PersonNode, DisplaySettings, ViewportState, EdgeData, PersonData } from '../store/useRelationshipStore';
 
-// 本地数组归一化（避免与 useFamilyStore 的循环依赖）
+// 本地数组归一化（避免与 useRelationshipStore 的循环依赖）
 function toArrayValueLocal(v: unknown): string[] | undefined {
   if (v === undefined || v === null) return undefined;
   if (Array.isArray(v)) return (v as unknown[]).map((x) => String(x));
@@ -59,7 +59,7 @@ export function exportToXML(data: ExportData): string {
   const { nodes, edges, displaySettings, viewport } = data;
   const lines: string[] = [];
   lines.push('<?xml version="1.0" encoding="UTF-8"?>');
-  lines.push('<familyTree>');
+  lines.push('<relationship>');
 
   // 节点
   lines.push('  <nodes>');
@@ -155,7 +155,7 @@ export function exportToXML(data: ExportData): string {
   // viewport
   lines.push(`  <viewport x="${viewport.x}" y="${viewport.y}" zoom="${viewport.zoom}" />`);
 
-  lines.push('</familyTree>');
+  lines.push('</relationship>');
   return lines.join('\n');
 }
 
@@ -165,8 +165,9 @@ export function importFromXML(text: string): ExportData {
   const parseError = doc.querySelector('parsererror');
   if (parseError) throw new Error('XML 解析失败');
 
-  const root = doc.querySelector('familyTree');
-  if (!root) throw new Error('XML 缺少 familyTree 根节点');
+  // 兼容新根节点 relationship 与旧根节点 familyTree
+  const root = doc.querySelector('relationship') || doc.querySelector('familyTree');
+  if (!root) throw new Error('XML 缺少 relationship 根节点');
 
   // 解析节点
   const nodes: PersonNode[] = [];

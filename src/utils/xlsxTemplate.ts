@@ -4,7 +4,7 @@
  * - 导入：校验后仅加载可用数据，作为独立人物增量添加（不带关系）
  */
 import * as XLSX from 'xlsx';
-import type { PersonData, Gender } from '../store/useFamilyStore';
+import type { PersonData, Gender } from '../store/useRelationshipStore';
 
 // 模板列定义（顺序即模板表头顺序）
 // label: 表头显示文字；key: PersonData 字段名或自定义属性 key
@@ -135,7 +135,7 @@ export function downloadTemplateXlsx(customColumns: { label: string; key: string
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = '族谱人物导入模板.xlsx';
+  a.download = '关系人物导入模板.xlsx';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

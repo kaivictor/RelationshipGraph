@@ -1,5 +1,5 @@
 import { Edge } from '@xyflow/react';
-import { PersonNode } from '../store/useFamilyStore';
+import { PersonNode } from '../store/useRelationshipStore';
 
 type PathStep = {
   dir: 'up' | 'down' | 'spouse' | 'sibling' | 'custom';

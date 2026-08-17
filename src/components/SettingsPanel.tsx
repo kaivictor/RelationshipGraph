@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useFamilyStore, DisplaySettings } from '../store/useFamilyStore';
+import { useRelationshipStore, DisplaySettings } from '../store/useRelationshipStore';
 import { Settings, ChevronRight, ChevronLeft, GripVertical, Plus, Trash2 } from 'lucide-react';
 import { CollapsibleSection } from './CollapsibleSection';
 import clsx from 'clsx';
@@ -73,7 +73,7 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
 }
 
 export function SettingsPanel() {
-  const { displaySettings, updateDisplaySettings, clearBrowserData } = useFamilyStore();
+  const { displaySettings, updateDisplaySettings, clearBrowserData } = useRelationshipStore();
   const [collapsed, setCollapsed] = useState(false);
   const [isAddingField, setIsAddingField] = useState(false);
   const [newFieldLabel, setNewFieldLabel] = useState('');

@@ -1,5 +1,5 @@
 import { BaseEdge, EdgeLabelRenderer, EdgeProps } from '@xyflow/react';
-import { useFamilyStore } from '../store/useFamilyStore';
+import { useRelationshipStore } from '../store/useRelationshipStore';
 
 export default function ParentChildEdge({
   source,
@@ -13,8 +13,8 @@ export default function ParentChildEdge({
   data,
 }: EdgeProps) {
   const disconnected = (data as { disconnected?: boolean })?.disconnected;
-  const showEdgeRelationship = useFamilyStore((s) => s.displaySettings.showEdgeRelationship);
-  const nodes = useFamilyStore((s) => s.nodes);
+  const showEdgeRelationship = useRelationshipStore((s) => s.displaySettings.showEdgeRelationship);
+  const nodes = useRelationshipStore((s) => s.nodes);
 
   // 查找父子两端节点的性别：source=父母，target=子女
   const parentNode = nodes.find((n) => n.id === source);
