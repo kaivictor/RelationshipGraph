@@ -9,5 +9,6 @@ coverage/
 android/
 *.apk
 temp/
-.github/
+.github/modernize/
+.gitee/
 devdoc/
