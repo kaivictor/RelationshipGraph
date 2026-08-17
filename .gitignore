@@ -9,3 +9,5 @@ coverage/
 android/
 *.apk
 temp/
+.github/
+devdoc/
