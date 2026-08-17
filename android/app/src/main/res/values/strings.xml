@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Relationship</string>
+    <string name="title_activity_main">Relationship</string>
+    <string name="package_name">relationship.p.heali.top</string>
+    <string name="custom_url_scheme">relationship.p.heali.top</string>
+</resources>

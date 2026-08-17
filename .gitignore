@@ -6,7 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
-android/
 *.apk
 temp/
 .github/modernize/
