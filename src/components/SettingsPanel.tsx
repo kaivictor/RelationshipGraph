@@ -74,7 +74,8 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
 
 export function SettingsPanel() {
   const { displaySettings, updateDisplaySettings, clearBrowserData } = useRelationshipStore();
-  const [collapsed, setCollapsed] = useState(false);
+  const collapsed = useRelationshipStore((s) => s.settingsPanelCollapsed);
+  const setCollapsed = useRelationshipStore((s) => s.setSettingsPanelCollapsed);
   const [isAddingField, setIsAddingField] = useState(false);
   const [newFieldLabel, setNewFieldLabel] = useState('');
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
@@ -167,7 +168,7 @@ export function SettingsPanel() {
     return (
       <button
         onClick={() => setCollapsed(false)}
-        className="absolute top-16 right-4 z-20 flex items-center gap-1 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700"
+        className="absolute top-16 right-4 z-50 flex items-center gap-1 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700"
         title="展开设置面板"
       >
         <Settings className="w-4 h-4" />
@@ -177,7 +178,7 @@ export function SettingsPanel() {
   }
 
   return (
-    <div className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-20">
+    <div className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-50">
       <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-gray-50">
         <div className="flex items-center gap-2">
           <Settings className="w-4 h-4 text-gray-600" />

@@ -14,8 +14,9 @@ import SpouseEdge from './SpouseEdge';
 import ParentChildEdge from './ParentChildEdge';
 import CustomEdge from './CustomEdge';
 import { toPng, toSvg } from 'html-to-image';
-import { Download, Upload, Image as ImageIcon, ChevronDown, Unlink, Link2, Undo2, HelpCircle, Spline, X } from 'lucide-react';
+import { Download, Upload, Image as ImageIcon, ChevronDown, Undo2, HelpCircle, Spline, X } from 'lucide-react';
 import { parseXlsxFile } from '../utils/xlsxTemplate';
+import { exportFile, exportImageFile } from '../utils/nativeExport';
 import clsx from 'clsx';
 
 const nodeTypes = {
@@ -51,6 +52,7 @@ export default function Relationship() {
     clickNodeInConnectMode,
     resetConnectSelection,
     setShowHelpPage,
+    setEdgeMenu,
   } = useRelationshipStore();
 
   const showCanvasHint = useRelationshipStore((s) => s.displaySettings.showCanvasHint);
@@ -61,7 +63,6 @@ export default function Relationship() {
   const [showExportDataMenu, setShowExportDataMenu] = useState(false);
   // PNG 自定义清晰度
   const [pngQuality, setPngQuality] = useState(2);
-  const [edgeMenu, setEdgeMenu] = useState<{ edgeId: string; x: number; y: number } | null>(null);
   // 导出图片时显示全屏遮罩，遮住 wrapper 尺寸变化的视觉闪烁
   const [isExporting, setIsExporting] = useState(false);
   // 连线模式：自定义关系称谓输入
@@ -76,7 +77,7 @@ export default function Relationship() {
   const longPressTriggeredRef = useRef(false);
   const longPressSavedIdsRef = useRef<string[]>([]);
 
-  const { disconnectEdge, reconnectEdge, viewport: savedViewport, setViewport } = useRelationshipStore();
+  const { viewport: savedViewport, setViewport } = useRelationshipStore();
   const undo = useRelationshipStore((s) => s.undo);
   const undoStack = useRelationshipStore((s) => s.undoStack);
   const lastUndoLabel = undoStack.length > 0 ? undoStack[undoStack.length - 1].label : '';
@@ -206,8 +207,10 @@ export default function Relationship() {
 
   const onEdgeClick = useCallback((event: { stopPropagation: () => void; clientX: number; clientY: number }, edge: { id: string }) => {
     event.stopPropagation();
-    setEdgeMenu({ edgeId: edge.id, x: event.clientX, y: event.clientY });
+    // 只打开"关系编辑"面板，不再弹出悬浮菜单。
+    // 面板内已包含"断开/恢复/删除关系"按钮，悬浮菜单+遮罩在触屏下会阻挡面板首次滑动。
     setSelectedEdgeId(edge.id);
+    setEdgeMenu(null);
   }, [setSelectedEdgeId]);
 
   // 生成时间戳后缀：YYYYMMDDhhmmss + 4位更精细单位（十分之一秒）
@@ -265,10 +268,8 @@ export default function Relationship() {
       const options = { filter, backgroundColor: '#f9fafb' };
       try {
         const dataUrl = format === 'svg' ? await toSvg(wrapper, options) : await toPng(wrapper, { ...options, pixelRatio: quality ?? 2 });
-        const link = document.createElement('a');
-        link.download = `relationship-${format === 'svg' ? '' : `${quality ?? 2}x-`}${timestampSuffix()}.${format}`;
-        link.href = dataUrl;
-        link.click();
+        const filename = `relationship-${format === 'svg' ? '' : `${quality ?? 2}x-`}${timestampSuffix()}.${format}`;
+        await exportImageFile(filename, dataUrl);
       } catch (err) { console.error('Failed to export', err); }
       return;
     }
@@ -338,17 +339,11 @@ export default function Relationship() {
       let dataUrl: string;
       if (format === 'svg') {
         dataUrl = await toSvg(wrapper, options);
-        const link = document.createElement('a');
-        link.download = `relationship-${timestampSuffix()}.svg`;
-        link.href = dataUrl;
-        link.click();
+        await exportImageFile(`relationship-${timestampSuffix()}.svg`, dataUrl);
       } else {
         const pixelRatio = quality && quality > 0 ? quality : 2;
         dataUrl = await toPng(wrapper, { ...options, pixelRatio });
-        const link = document.createElement('a');
-        link.download = `relationship-${pixelRatio}x-${timestampSuffix()}.png`;
-        link.href = dataUrl;
-        link.click();
+        await exportImageFile(`relationship-${pixelRatio}x-${timestampSuffix()}.png`, dataUrl);
       }
     } catch (err) {
       console.error('Failed to export image', err);
@@ -360,18 +355,12 @@ export default function Relationship() {
     }
   }, [setRFViewport, timestampSuffix]);
 
-  const handleExportData = (format: 'json' | 'xml' | 'csv') => {
+  const handleExportData = async (format: 'json' | 'xml' | 'csv') => {
     setShowExportDataMenu(false);
     const data = exportData(format);
     const mime = format === 'json' ? 'application/json' : format === 'xml' ? 'application/xml' : 'text/csv';
-    const ext = format;
-    const blob = new Blob([data], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.download = `relationship-data-${timestampSuffix()}.${ext}`;
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
+    const filename = `relationship-data-${timestampSuffix()}.${format}`;
+    await exportFile(filename, data, mime);
   };
 
   const handleImportData = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -687,46 +676,6 @@ export default function Relationship() {
         </Panel>
       </ReactFlow>
 
-      {/* 边点击菜单：断开/恢复关系 */}
-      {edgeMenu && (() => {
-        const edge = edges.find((e) => e.id === edgeMenu.edgeId);
-        if (!edge) return null;
-        const isDisconnected = (edge.data as { disconnected?: boolean })?.disconnected;
-        return (
-          <>
-            <div className="fixed inset-0 z-40" onClick={() => setEdgeMenu(null)} />
-            <div
-              className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[140px]"
-              style={{ left: edgeMenu.x, top: edgeMenu.y }}
-            >
-              {isDisconnected ? (
-                <button
-                  onClick={() => {
-                    reconnectEdge(edgeMenu.edgeId);
-                    setEdgeMenu(null);
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                >
-                  <Link2 className="w-4 h-4 text-green-500" />
-                  恢复关系
-                </button>
-              ) : (
-                <button
-                  onClick={() => {
-                    disconnectEdge(edgeMenu.edgeId);
-                    setEdgeMenu(null);
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                >
-                  <Unlink className="w-4 h-4 text-orange-500" />
-                  断开关系
-                </button>
-              )}
-            </div>
-          </>
-        );
-      })()}
-      
       {showCanvasHint && !selectedNodeId && connectionMode === 'off' && (
         <div className="export-hide absolute top-4 left-4 bg-white/80 backdrop-blur-sm px-4 py-3 rounded-lg border border-gray-200 shadow-sm text-sm text-gray-600 pointer-events-none z-10">
           点击节点查看详情并添加亲属

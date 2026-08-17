@@ -222,6 +222,12 @@ interface RelationshipState {
   connectExisting: (sourceId: string, targetId: string, type: 'parent' | 'child' | 'spouse' | 'custom', customLabel?: string) => void;
   setSelectedNodeId: (id: string | null) => void;
   setSelectedEdgeId: (id: string | null) => void;
+  // 全局设置面板的收起状态（提升到 store，避免组件卸载/重挂时丢失）
+  settingsPanelCollapsed: boolean;
+  setSettingsPanelCollapsed: (v: boolean) => void;
+  // 连线点击悬浮菜单（提升到 store，便于跨组件关闭）
+  edgeMenu: { edgeId: string; x: number; y: number } | null;
+  setEdgeMenu: (v: { edgeId: string; x: number; y: number } | null) => void;
   /** 切换某节点的选中状态（累加选择，不清除其他节点） */
   toggleNodeSelected: (id: string) => void;
   /** 设置多选：仅给定 ID 的节点为选中，同时更新 selectedNodeId 为最后一个 */
@@ -627,6 +633,8 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   connectionCustomLabel: '',
   connectFirstNodeId: null,
   showHelpPage: false,
+  settingsPanelCollapsed: false,
+  edgeMenu: null,
 
   onNodesChange: (changes) => {
     const currentNodes = get().nodes;
@@ -975,6 +983,10 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       });
     }
   },
+
+  setSettingsPanelCollapsed: (v) => set({ settingsPanelCollapsed: v }),
+
+  setEdgeMenu: (v) => set({ edgeMenu: v }),
 
   // 长按多选：切换某节点选中状态（不影响其他节点）
   toggleNodeSelected: (id) => {

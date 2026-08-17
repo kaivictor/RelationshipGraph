@@ -5,6 +5,7 @@
  */
 import * as XLSX from 'xlsx';
 import type { PersonData, Gender } from '../store/useRelationshipStore';
+import { arrayBufferToDataUrl, downloadInBrowser, isNativePlatform, shareFileOnNative } from './nativeExport';
 
 // 模板列定义（顺序即模板表头顺序）
 // label: 表头显示文字；key: PersonData 字段名或自定义属性 key
@@ -128,18 +129,17 @@ export function generateTemplateXlsx(customColumns: { label: string; key: string
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
 }
 
-// 触发浏览器下载模板
-export function downloadTemplateXlsx(customColumns: { label: string; key: string }[] = []) {
+// 下载 Excel 模板：原生环境走「写入缓存 + 系统分享」，Web 环境走浏览器下载
+export async function downloadTemplateXlsx(customColumns: { label: string; key: string }[] = []) {
   const buf = generateTemplateXlsx(customColumns);
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = '关系人物导入模板.xlsx';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const filename = '关系人物导入模板.xlsx';
+  if (isNativePlatform()) {
+    await shareFileOnNative(filename, arrayBufferToDataUrl(buf, mime));
+    return;
+  }
+  const blob = new Blob([buf], { type: mime });
+  downloadInBrowser(filename, blob);
 }
 
 // 解析导入的 xlsx 文件，返回可用的人物数据数组（独立人物，无关系）

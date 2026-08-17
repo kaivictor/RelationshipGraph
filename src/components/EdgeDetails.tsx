@@ -162,7 +162,10 @@ export function EdgeDetails() {
   const candidateNodes = nodes.filter((n) => n.id !== edge.source && n.id !== edge.target);
 
   return (
-    <div className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-20">
+    <div
+      className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-50"
+      onPointerDownCapture={() => useRelationshipStore.getState().setEdgeMenu(null)}
+    >
       {/* 头部 */}
       <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-gray-50">
         <h2 className="font-semibold text-gray-800">关系编辑</h2>
