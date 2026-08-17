@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -8,7 +8,7 @@ import {
   useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useRelationshipStore } from '../store/useRelationshipStore';
+import { useRelationshipStore, computeInvisibleNodes } from '../store/useRelationshipStore';
 import { PersonNodeComponent } from './PersonNode';
 import SpouseEdge from './SpouseEdge';
 import ParentChildEdge from './ParentChildEdge';
@@ -56,6 +56,23 @@ export default function Relationship() {
   } = useRelationshipStore();
 
   const showCanvasHint = useRelationshipStore((s) => s.displaySettings.showCanvasHint);
+  const hiddenNodeIds = useRelationshipStore((s) => s.hiddenNodeIds);
+
+  // 不可见集合 = 隐藏边（桥语义）+ 隐藏节点（割点语义）共同作用下，从"自己"不可达的节点
+  const invisibleNodeIds = useMemo(() => {
+    const invisible = computeInvisibleNodes(nodes, edges, hiddenNodeIds);
+    return invisible.size > 0 ? invisible : null;
+  }, [nodes, edges, hiddenNodeIds]);
+
+  // 过滤被隐藏/隐藏的节点和边；已隐藏的边线也不可见
+  const visibleNodes = invisibleNodeIds
+    ? nodes.filter((n) => !invisibleNodeIds.has(n.id))
+    : nodes;
+  const visibleEdges = edges.filter(
+    (e) =>
+      !((e.data as { collapsed?: boolean })?.collapsed) &&
+      (!invisibleNodeIds || (!invisibleNodeIds.has(e.source) && !invisibleNodeIds.has(e.target)))
+  );
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { fitView, setViewport: setRFViewport } = useReactFlow();
@@ -435,11 +452,11 @@ export default function Relationship() {
     >
       <ReactFlow
         nodes={connectFirstNodeId
-          ? nodes.map((n) => n.id === connectFirstNodeId
+          ? visibleNodes.map((n) => n.id === connectFirstNodeId
             ? { ...n, style: { ...n.style, boxShadow: '0 0 0 3px #2563eb, 0 4px 12px rgba(37,99,235,0.4)' } }
             : n)
-          : nodes}
-        edges={edges}
+          : visibleNodes}
+        edges={visibleEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

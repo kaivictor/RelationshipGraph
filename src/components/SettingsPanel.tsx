@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useRelationshipStore, DisplaySettings } from '../store/useRelationshipStore';
-import { Settings, ChevronRight, ChevronLeft, GripVertical, Plus, Trash2 } from 'lucide-react';
+import { Settings, ChevronRight, ChevronLeft, GripVertical, Plus, Trash2, EyeOff } from 'lucide-react';
 import { CollapsibleSection } from './CollapsibleSection';
 import clsx from 'clsx';
 
@@ -73,7 +73,7 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
 }
 
 export function SettingsPanel() {
-  const { displaySettings, updateDisplaySettings, clearBrowserData } = useRelationshipStore();
+  const { displaySettings, updateDisplaySettings, clearBrowserData, unhideAll } = useRelationshipStore();
   const collapsed = useRelationshipStore((s) => s.settingsPanelCollapsed);
   const setCollapsed = useRelationshipStore((s) => s.setSettingsPanelCollapsed);
   const [isAddingField, setIsAddingField] = useState(false);
@@ -364,7 +364,7 @@ export function SettingsPanel() {
           )}
         </CollapsibleSection>
 
-        {/* 关系与显示（默认折叠） */}
+        {/* 关系与显示（默认隐藏） */}
         <CollapsibleSection title="关系与显示" defaultOpen={false} storageKey="settings:relation">
           <Toggle
             label="连线显示亲属关系"
@@ -383,6 +383,12 @@ export function SettingsPanel() {
             description="在画布左上角显示操作提示（如「点击节点查看详情」、连线模式状态等）"
             checked={displaySettings.showCanvasHint}
             onChange={(v) => updateDisplaySettings({ showCanvasHint: v })}
+          />
+          <Toggle
+            label="显示关系统计徽章"
+            description="在每个角色方框底部显示「父母 x · 子女 x · 爱人 x · 其他 xx」统计"
+            checked={displaySettings.showStatsBadge}
+            onChange={(v) => updateDisplaySettings({ showStatsBadge: v })}
           />
           <div className="mt-3">
             <div className="flex items-center justify-between mb-2">
@@ -411,7 +417,7 @@ export function SettingsPanel() {
           </div>
         </CollapsibleSection>
 
-        {/* 数据存储（不折叠，含危险操作需常驻可见） */}
+        {/* 数据存储（不隐藏，含危险操作需常驻可见） */}
         <div className="mt-4 pt-4 border-t border-gray-200">
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">数据存储</h3>
           <Toggle
@@ -420,6 +426,13 @@ export function SettingsPanel() {
             checked={displaySettings.persistToBrowser}
             onChange={(v) => updateDisplaySettings({ persistToBrowser: v })}
           />
+          <button
+            onClick={() => unhideAll()}
+            className="mt-3 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-amber-600 border border-amber-300 rounded-md hover:bg-amber-50 transition-colors"
+          >
+            <EyeOff className="w-3.5 h-3.5" />
+            全部取消隐藏
+          </button>
           <button
             onClick={() => {
               if (confirm('确定清除浏览器中保存的所有数据吗？此操作不可恢复，将恢复到默认族谱。')) {

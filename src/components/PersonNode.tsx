@@ -108,6 +108,26 @@ const ICON_FIELDS = {
 export function PersonNodeComponent({ id, data, selected }: { id: string; data: PersonData; selected: boolean }) {
   const displaySettings = useRelationshipStore((state) => state.displaySettings);
   const isGrayed = useRelationshipStore((state) => state.grayedNodeIds.has(id));
+  const edges = useRelationshipStore((state) => state.edges);
+
+  // 关系统计：父母 / 子女 / 爱人 / 其他
+  const stats = (() => {
+    let parents = 0, children = 0, spouse = 0, others = 0;
+    for (const e of edges) {
+      if (e.source !== id && e.target !== id) continue;
+      const t = (e.data as { type?: string })?.type;
+      if (t === 'parent-child') {
+        if (e.target === id) parents++;
+        else if (e.source === id) children++;
+      } else if (t === 'spouse') {
+        spouse++;
+      } else if (t === 'custom') {
+        others++;
+      }
+    }
+    return { parents, children, spouse, others };
+  })();
+  const formatCount = (n: number) => (n > 99 ? '*' : n > 9 ? '9+' : String(n));
 
   const age = displaySettings.showAge ? calculateAge(data.birthDate, data.deathDate) : null;
   const showAgeNum = age !== null && age >= 0;
@@ -414,6 +434,21 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
           </div>
         )}
       </div>
+
+      {/* 关系统计徽章：父母 x 子女 x 爱人 x 其他 xx */}
+      {displaySettings.showStatsBadge && (
+        <div className="mt-1.5 flex justify-center">
+          <div className="inline-flex items-center gap-px px-1 py-[1px] rounded-md bg-gray-100/80 border border-gray-200/70 text-[8px] leading-none text-gray-500 select-none">
+            <span>父母{formatCount(stats.parents)}</span>
+            <span className="text-gray-300 text-[6px]">·</span>
+            <span>子女{formatCount(stats.children)}</span>
+            <span className="text-gray-300 text-[6px]">·</span>
+            <span>爱人{formatCount(stats.spouse)}</span>
+            <span className="text-gray-300 text-[6px]">·</span>
+            <span>其他{formatCount(stats.others)}</span>
+          </div>
+        </div>
+      )}
 
       <Handle
         type="source"

@@ -133,6 +133,7 @@ export type DisplaySettings = {
   persistToBrowser: boolean;
   deathDateReplaceBirth: boolean; // 离世日期代替出生日期
   showCanvasHint: boolean; // 是否显示画布左上角提示
+  showStatsBadge: boolean; // 是否在节点底部显示关系统计徽章
 };
 
 export type ViewportState = {
@@ -145,6 +146,7 @@ export type ViewportState = {
 export type EdgeData = {
   type: 'spouse' | 'parent-child' | 'custom';
   disconnected?: boolean;
+  collapsed?: boolean; // 隐藏状态（桥语义：概念上断开该边）
   customLabel?: string; // 自定义关系称谓（如同学、同事、朋友），相对于 source 端
 };
 
@@ -154,6 +156,7 @@ export type UndoSnapshot = {
   nodes: PersonNode[];
   edges: Edge[];
   grayedNodeIds: Set<string>;
+  hiddenNodeIds: Set<string>;
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
   displaySettings: DisplaySettings;
@@ -193,6 +196,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   persistToBrowser: true,
   deathDateReplaceBirth: true,
   showCanvasHint: true,
+  showStatsBadge: true,
 };
 
 interface RelationshipState {
@@ -202,6 +206,7 @@ interface RelationshipState {
   selectedEdgeId: string | null;
   displaySettings: DisplaySettings;
   grayedNodeIds: Set<string>;
+  hiddenNodeIds: Set<string>; // 手动隐藏的节点集合（"隐藏此人"），自己不可隐藏
   viewport: ViewportState;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
@@ -213,8 +218,8 @@ interface RelationshipState {
   deletePerson: (id: string, cascadeDescendants?: boolean) => void;
   /**
    * 计算删除某人时，可级联删除的晚辈集合。
-   * 规则：从该人出发向下遍历 parent-child 边，仅保留「只有这一条父辈线、且无其它长辈/同辈/配偶/自定义关系」的晚辈。
-   * 即：若某晚辈还有另一个父/母（未被删除）、或有配偶/兄弟/自定义关系，则不删。
+   * 规则：从该人出发向下遍历 parent-child 边，仅保留「只有这一条父辈线、且无其它长辈/同辈/爱人/自定义关系」的晚辈。
+   * 即：若某晚辈还有另一个父/母（未被删除）、或有爱人/兄弟/自定义关系，则不删。
    * 返回的集合不含传入的 id 本身。
    */
   getDescendantsForCascade: (id: string) => string[];
@@ -243,6 +248,22 @@ interface RelationshipState {
   swapEdgeDirection: (edgeId: string) => void;
   /** 删除边（彻底删除，区别于断开） */
   deleteEdge: (edgeId: string) => void;
+  /** 隐藏单条关系（隐藏该关系及其携带的其他关系） */
+  collapseEdge: (edgeId: string) => void;
+  /** 展开单条关系（仅内部使用：取消隐藏某条边） */
+  expandEdge: (edgeId: string) => void;
+  /** 按类别批量隐藏/展开某节点的所有同类关系。返回是否成功（守卫失败时返回原因） */
+  setCategoryFold: (
+    nodeId: string,
+    category: 'parents' | 'children' | 'spouse' | 'other' | string,
+    state: 'all' | 'none'
+  ) => { ok: true } | { ok: false; reason: string };
+  /** 隐藏此人（自己不可隐藏）：该人及缺失该人（割点）后从"自己"不可达的人一并隐藏 */
+  hidePerson: (id: string) => void;
+  /** 取消隐藏某人（其携带隐藏的人自动恢复显示） */
+  unhidePerson: (id: string) => void;
+  /** 全部取消隐藏：清空 hiddenNodeIds + 取消所有边的 collapsed 标记 */
+  unhideAll: () => void;
   setAsSelf: (id: string) => void;
   setViewport: (vp: ViewportState) => void;
   clearBrowserData: () => void;
@@ -315,6 +336,7 @@ type PersistedState = {
   edges: Edge[];
   displaySettings: DisplaySettings;
   viewport: ViewportState;
+  hiddenNodeIds?: string[]; // 手动隐藏的节点（"隐藏此人"）
 };
 
 /**
@@ -355,6 +377,7 @@ function loadPersistedState(): PersistedState | null {
       edges: data.edges,
       displaySettings,
       viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
+      hiddenNodeIds: Array.isArray(data.hiddenNodeIds) ? data.hiddenNodeIds : undefined,
     };
   } catch (e) {
     console.error('加载浏览器数据失败', e);
@@ -420,6 +443,10 @@ const initialNodesResolved = persisted ? normalizeNodes(persisted.nodes) : apply
 const initialEdgesResolved = persisted ? persisted.edges : initialEdges;
 const initialDisplaySettings = persisted ? persisted.displaySettings : DEFAULT_DISPLAY_SETTINGS;
 const initialViewport = persisted ? persisted.viewport : { x: 0, y: 0, zoom: 1 };
+// 手动隐藏节点：过滤掉已不存在的 id
+const initialHiddenNodeIds = new Set<string>(
+  (persisted?.hiddenNodeIds || []).filter((id) => initialNodesResolved.some((n) => n.id === id))
+);
 // 首次加载（无持久化数据）时需要标记重新计算灰色节点
 const hasPersistedData = !!persisted;
 
@@ -513,12 +540,12 @@ function applyRelativeYPositions(nodes: PersonNode[], gapScale: number = 1): Per
  *
  * 自己（isSelf）通过 data.isSelf 标记动态确定，支持"把这个人设为我"功能。
  *
- * 核心问题：自己和配偶共享子女时，仅靠连通性无法判断配偶是否"被切断"
- * （配偶仍可通过子女从自己到达）。因此按边类型做定向遍历：
+ * 核心问题：自己和爱人共享子女时，仅靠连通性无法判断爱人是否"被切断"
+ * （爱人仍可通过子女从自己到达）。因此按边类型做定向遍历：
  *
- * - 配偶边断开：far = 非自己一侧的配偶。从 far 向上（父母）和 sideways（其他配偶）遍历，
+ * - 爱人边断开：far = 非自己一侧的爱人。从 far 向上（父母）和 sideways（其他爱人）遍历，
  *   不向下（不遍历子女，因为子女是共享的、不变灰）。
- * - 父子边断开（source=父母，target=子女）：far = 子女。从 far 向下（子女）和 sideways（配偶）遍历，
+ * - 父子边断开（source=父母，target=子女）：far = 子女。从 far 向下（子女）和 sideways（爱人）遍历，
  *   不向上（不遍历父母，因为另一位父母可能仍与自己有关系）。
  *
  * "同事例外"：若某节点与自己存在不经过 far 的其他路径（例如前妻父亲同时是自己的同事），
@@ -606,15 +633,59 @@ function computeGrayedNodes(
   return graySet;
 }
 
+/**
+ * 统一计算所有不可见节点（同时考虑隐藏边和隐藏节点）。
+ *
+ * 隐藏语义：隐藏一条边 = 概念上从图中移除该边（桥/割边）。
+ * 隐藏语义：隐藏一个节点 = 从图中移除该节点（割点）。
+ * 两者交互：如父亲被隐藏 + 妈妈-妹妹边被隐藏 → 妹妹不可达（两种机制共同作用）。
+ *
+ * BFS 从"自己"出发，跳过隐藏边和隐藏节点，凡不可达的节点全部不可见。
+ * "自己"永不被隐藏。直接隐藏的节点本身也不可达（被跳过）。
+ */
+export function computeInvisibleNodes(
+  nodes: PersonNode[],
+  edges: Edge[],
+  hiddenNodeIds: Set<string>
+): Set<string> {
+  const selfNode = nodes.find((n) => n.data.isSelf);
+  if (!selfNode) {
+    // 无"自己"节点：仅隐藏手动隐藏的
+    return new Set(hiddenNodeIds);
+  }
+  const hasCollapsed = edges.some((e) => (e.data as EdgeData)?.collapsed);
+  if (!hasCollapsed && hiddenNodeIds.size === 0) return new Set<string>();
+
+  const selfId = selfNode.id;
+  const reachable = new Set<string>([selfId]);
+  const queue: string[] = [selfId];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const e of edges) {
+      if ((e.data as EdgeData)?.collapsed) continue; // 跳过隐藏边
+      let next: string | null = null;
+      if (e.source === cur) next = e.target;
+      else if (e.target === cur) next = e.source;
+      if (!next || reachable.has(next)) continue;
+      if (hiddenNodeIds.has(next)) continue; // 跳过隐藏节点（割点缺失）
+      reachable.add(next);
+      queue.push(next);
+    }
+  }
+
+  // 不可达 = 不可见（含直接隐藏者本身，因它们被跳过故不可达）
+  return new Set(nodes.filter((n) => n.id !== selfId && !reachable.has(n.id)).map((n) => n.id));
+}
+
 export const useRelationshipStore = create<RelationshipState>((set, get) => {
   const MAX_UNDO = 30;
   // 在「大操作」前调用：将当前状态压入撤销栈
   const pushUndo = (label: string) => {
-    const { nodes, edges, grayedNodeIds, selectedNodeId, selectedEdgeId, displaySettings, undoStack } = get();
+    const { nodes, edges, grayedNodeIds, hiddenNodeIds, selectedNodeId, selectedEdgeId, displaySettings, undoStack } = get();
     set({
       undoStack: [
         ...undoStack,
-        { label, nodes, edges, grayedNodeIds, selectedNodeId, selectedEdgeId, displaySettings },
+        { label, nodes, edges, grayedNodeIds, hiddenNodeIds, selectedNodeId, selectedEdgeId, displaySettings },
       ].slice(-MAX_UNDO),
     });
   };
@@ -627,6 +698,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   grayedNodeIds: hasPersistedData
     ? computeGrayedNodes(initialNodesResolved, initialEdgesResolved, initialDisplaySettings.showGrayOnDisconnect)
     : new Set<string>(),
+  hiddenNodeIds: initialHiddenNodeIds,
   viewport: initialViewport,
   undoStack: [],
   connectionMode: 'off',
@@ -719,12 +791,16 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     const newEdges = get().edges.filter(
       (edge) => !toDelete.has(edge.source) && !toDelete.has(edge.target)
     );
-    const { displaySettings } = get();
+    const { displaySettings, hiddenNodeIds: prevHidden } = get();
+    // 清理被删除者的隐藏标记
+    const hiddenNodeIds = new Set(prevHidden);
+    for (const id of toDelete) hiddenNodeIds.delete(id);
     set({
       nodes: applyRelativeYPositions(filteredNodes, displaySettings.verticalGapScale),
       edges: newEdges,
       selectedNodeId: toDelete.has(get().selectedNodeId || '') ? null : get().selectedNodeId,
       grayedNodeIds: computeGrayedNodes(filteredNodes, newEdges, displaySettings.showGrayOnDisconnect),
+      hiddenNodeIds,
     });
     get().recalculateRelationships();
   },
@@ -746,7 +822,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
           const isAllowedParentLink =
             e.data?.type === 'parent-child' && e.source === allowedParentId && e.target === nodeId;
           if (isAllowedParentLink) return false;
-          // 其它任何边（另一个父/母、配偶、兄弟、自定义、或作为别人的父母）都算「其它关系」
+          // 其它任何边（另一个父/母、爱人、兄弟、自定义、或作为别人的父母）都算「其它关系」
           return true;
         }
         return false;
@@ -853,9 +929,11 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       });
     }
 
+    const newNodes = applyRelativeYPositions([...get().nodes, newNode], get().displaySettings.verticalGapScale);
+    const finalEdges = [...get().edges, ...newEdges];
     set({
-      nodes: applyRelativeYPositions([...get().nodes, newNode], get().displaySettings.verticalGapScale),
-      edges: [...get().edges, ...newEdges],
+      nodes: newNodes,
+      edges: finalEdges,
     });
 
     get().recalculateRelationships();
@@ -882,7 +960,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       if (!exists(targetId, sourceId, 'parent-child')) {
         newEdges.push({ id: `e-${targetId}-${sourceId}`, source: targetId, target: sourceId, data: { type: 'parent-child' }, type: 'parent-child' });
       }
-      // 若 source 已有父母，将新父母与已有父母连接为配偶
+      // 若 source 已有父母，将新父母与已有父母连接为爱人
       const existingParents = edges.filter(e => e.target === sourceId && e.data?.type === 'parent-child');
       existingParents.forEach(e => {
         if (e.source !== targetId && !exists(e.source, targetId, 'spouse')) {
@@ -894,7 +972,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       if (!exists(sourceId, targetId, 'parent-child')) {
         newEdges.push({ id: `e-${sourceId}-${targetId}`, source: sourceId, target: targetId, data: { type: 'parent-child' }, type: 'parent-child' });
       }
-      // source 的配偶也成为 target 的父母
+      // source 的爱人也成为 target 的父母
       const spouses = edges.filter(e => e.data?.type === 'spouse' && (e.source === sourceId || e.target === sourceId));
       spouses.forEach(e => {
         const spouseId = e.source === sourceId ? e.target : e.source;
@@ -921,7 +999,11 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
 
     if (newEdges.length === 0) return;
     pushUndo('连接现有关系');
-    set({ edges: [...get().edges, ...newEdges] });
+    const finalEdges = [...get().edges, ...newEdges];
+    const { nodes: curNodes } = get();
+    set({
+      edges: finalEdges,
+    });
     get().recalculateRelationships();
   },
 
@@ -1130,6 +1212,135 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     get().recalculateRelationships();
   },
 
+  collapseEdge: (edgeId) => {
+    pushUndo('隐藏关系');
+    const { edges: curEdges } = get();
+    const edges = curEdges.map((e) =>
+      e.id === edgeId ? { ...e, data: { ...e.data, collapsed: true } } : e
+    );
+    set({
+      edges,
+    });
+  },
+
+  expandEdge: (edgeId) => {
+    pushUndo('展开关系');
+    const edges = get().edges.map((e) =>
+      e.id === edgeId ? { ...e, data: { ...e.data, collapsed: false } } : e
+    );
+    set({
+      edges,
+    });
+  },
+
+  setCategoryFold: (nodeId, category, state) => {
+    const { edges, nodes, hiddenNodeIds } = get();
+    const selfId = nodes.find((n) => n.data.isSelf)?.id;
+    // 选出该节点对应类别的所有边
+    const matchedEdgeIds = new Set<string>();
+    for (const e of edges) {
+      const data = e.data as EdgeData;
+      if (!data) continue;
+      const involvesNode = e.source === nodeId || e.target === nodeId;
+      if (!involvesNode) continue;
+      let matched = false;
+      if (category === 'parents') {
+        // 父母：parent-child 边且该节点为 target（子女端）
+        matched = data.type === 'parent-child' && e.target === nodeId;
+      } else if (category === 'children') {
+        // 子女：parent-child 边且该节点为 source（父母端）
+        matched = data.type === 'parent-child' && e.source === nodeId;
+      } else if (category === 'spouse') {
+        matched = data.type === 'spouse';
+      } else if (category === 'other') {
+        // 其他：所有自定义关系
+        matched = data.type === 'custom';
+      } else {
+        // 子类别：customLabel 匹配
+        matched = data.type === 'custom' && data.customLabel === category;
+      }
+      if (matched) matchedEdgeIds.add(e.id);
+    }
+    if (matchedEdgeIds.size === 0) return { ok: false, reason: '该角色没有此类别的关系' };
+    const matchedEdges = edges.filter((e) => matchedEdgeIds.has(e.id));
+
+    if (state === 'all') {
+      // 收集类别成员（对端节点）
+      const categoryMembers = new Set<string>();
+      for (const e of matchedEdges) {
+        const far = e.source === nodeId ? e.target : e.source;
+        categoryMembers.add(far);
+      }
+      // 守卫1：类别成员包含"自己"（如隐藏妈妈的子女、儿子的父母）→ 整个动作无效
+      if (selfId && categoryMembers.has(selfId)) {
+        return { ok: false, reason: '该类别包含"自己"，无法隐藏' };
+      }
+      // 试算隐藏后的不可见集：隐藏类别成员后，与"自己"不连通的全部隐藏
+      const tentativeHidden = new Set(hiddenNodeIds);
+      for (const id of categoryMembers) tentativeHidden.add(id);
+      const wouldHide = computeInvisibleNodes(nodes, edges, tentativeHidden);
+      // 守卫2：隐藏会导致当前选中者被隐藏 → 不隐藏
+      if (wouldHide.has(nodeId)) {
+        return { ok: false, reason: '该操作会导致当前角色被隐藏，已取消' };
+      }
+      // 隐藏类别成员 → computeInvisibleNodes 自然级联隐藏与"自己"不连通的人物
+      pushUndo('隐藏类别关系');
+      set({
+        hiddenNodeIds: tentativeHidden,
+      });
+      return { ok: true } as const;
+    }
+
+    // 无：取消该类别隐藏 + 取消隐藏该类别边（含"隐藏此人"直接隐藏的）
+    pushUndo('展开类别关系');
+    const newEdges = edges.map((e) =>
+      matchedEdgeIds.has(e.id) ? { ...e, data: { ...e.data, collapsed: false } } : e
+    );
+    const newHidden = new Set(hiddenNodeIds);
+    for (const e of matchedEdges) {
+      newHidden.delete(e.source === nodeId ? e.target : e.source);
+    }
+    set({
+      edges: newEdges,
+      hiddenNodeIds: newHidden,
+    });
+    return { ok: true } as const;
+  },
+
+  hidePerson: (id) => {
+    const node = get().nodes.find((n) => n.id === id);
+    if (!node || node.data.isSelf) return; // 自己不可隐藏
+    pushUndo('隐藏此人');
+    const hiddenNodeIds = new Set(get().hiddenNodeIds);
+    hiddenNodeIds.add(id);
+    set({
+      hiddenNodeIds,
+      selectedNodeId: null, // 隐藏后关闭详情面板
+    });
+  },
+
+  unhidePerson: (id) => {
+    if (!get().hiddenNodeIds.has(id)) return;
+    pushUndo('取消隐藏');
+    const hiddenNodeIds = new Set(get().hiddenNodeIds);
+    hiddenNodeIds.delete(id);
+    set({ hiddenNodeIds });
+  },
+
+  unhideAll: () => {
+    const { hiddenNodeIds, edges } = get();
+    if (hiddenNodeIds.size === 0 && !edges.some((e) => (e.data as EdgeData)?.collapsed)) return;
+    pushUndo('全部取消隐藏');
+    set({
+      hiddenNodeIds: new Set<string>(),
+      edges: edges.map((e) =>
+        (e.data as EdgeData)?.collapsed
+          ? { ...e, data: { ...e.data, collapsed: false } }
+          : e
+      ),
+    });
+  },
+
   setAsSelf: (id) => {
     pushUndo('设为自己');
     // 切换"自己"：移除其他节点的 isSelf，标记目标节点为 isSelf，并重新计算灰色节点
@@ -1178,6 +1389,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       selectedNodeId: null,
       displaySettings: { ...DEFAULT_DISPLAY_SETTINGS, persistToBrowser: true },
       grayedNodeIds: new Set<string>(),
+      hiddenNodeIds: new Set<string>(),
       viewport: { x: 0, y: 0, zoom: 1 },
     });
   },
@@ -1222,19 +1434,27 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   },
 
   exportData: (format) => {
-    const { nodes, edges, displaySettings, viewport } = get();
-    return exportToFormat({ nodes, edges, displaySettings, viewport }, format || 'json');
+    const { nodes, edges, displaySettings, viewport, hiddenNodeIds } = get();
+    return exportToFormat({ nodes, edges, displaySettings, viewport, hiddenNodeIds: Array.from(hiddenNodeIds) }, format || 'json');
   },
 
   importData: (text, format) => {
     try {
       const data = importFromFormat(text, format || 'json');
       pushUndo('导入数据');
+      const newNodes = normalizeNodes(data.nodes);
+      const newEdges = data.edges;
+      const newDisplaySettings = { ...DEFAULT_DISPLAY_SETTINGS, ...(data.displaySettings || {}) };
+      const newHiddenNodeIds = new Set<string>(
+        (data.hiddenNodeIds || []).filter((id) => newNodes.some((n) => n.id === id))
+      );
       set({
-        nodes: normalizeNodes(data.nodes),
-        edges: data.edges,
+        nodes: newNodes,
+        edges: newEdges,
         selectedNodeId: null,
-        displaySettings: { ...DEFAULT_DISPLAY_SETTINGS, ...(data.displaySettings || {}) },
+        displaySettings: newDisplaySettings,
+        grayedNodeIds: computeGrayedNodes(newNodes, newEdges, newDisplaySettings.showGrayOnDisconnect),
+        hiddenNodeIds: newHiddenNodeIds,
         viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
       });
       get().recalculateRelationships();
@@ -1374,6 +1594,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       nodes: snapshot.nodes,
       edges: snapshot.edges,
       grayedNodeIds: snapshot.grayedNodeIds,
+      hiddenNodeIds: snapshot.hiddenNodeIds,
       selectedNodeId: snapshot.selectedNodeId,
       selectedEdgeId: snapshot.selectedEdgeId,
       displaySettings: snapshot.displaySettings,
@@ -1404,5 +1625,6 @@ useRelationshipStore.subscribe((state) => {
     edges: state.edges,
     displaySettings: state.displaySettings,
     viewport: state.viewport,
+    hiddenNodeIds: Array.from(state.hiddenNodeIds),
   });
 });

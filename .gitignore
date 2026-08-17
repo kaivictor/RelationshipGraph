@@ -11,3 +11,4 @@ temp/
 .github/modernize/
 .gitee/
 devdoc/
+*.lnk

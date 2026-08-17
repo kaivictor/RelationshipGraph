@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useRelationshipStore, EdgeData, PersonNode } from '../store/useRelationshipStore';
-import { X, Unlink, Link2, Trash2, ArrowRight, ArrowLeftRight, User, UserRound, UserRoundSearch } from 'lucide-react';
+import { X, Unlink, Link2, Trash2, ArrowRight, ArrowLeftRight, User, UserRound, UserRoundSearch, EyeOff, Eye } from 'lucide-react';
 import clsx from 'clsx';
 
 // 性别图标
@@ -71,6 +71,8 @@ export function EdgeDetails() {
     disconnectEdge,
     reconnectEdge,
     deleteEdge,
+    collapseEdge,
+    expandEdge,
   } = useRelationshipStore();
 
   // 本地编辑状态：当前正在编辑的端（source/target）
@@ -88,6 +90,7 @@ export function EdgeDetails() {
   const data = edge.data as EdgeData;
   const edgeType = data?.type || 'parent-child';
   const isDisconnected = !!data?.disconnected;
+  const isCollapsed = !!data?.collapsed;
   const customLabel = data?.customLabel || '';
 
   const sourceNode = nodes.find((n) => n.id === edge.source);
@@ -96,7 +99,7 @@ export function EdgeDetails() {
   // 关系类型的中文描述
   const typeLabel = (t: string): string => {
     if (t === 'parent-child') return '父子/母子';
-    if (t === 'spouse') return '配偶';
+    if (t === 'spouse') return '爱人';
     return '自定义';
   };
 
@@ -108,7 +111,7 @@ export function EdgeDetails() {
       return `${sName} 是 ${tName} 的父母`;
     }
     if (edgeType === 'spouse') {
-      return `${sName} 与 ${tName} 是配偶`;
+      return `${sName} 与 ${tName} 是爱人`;
     }
     return `${sName} → ${tName}（${customLabel || '自定义关系'}）`;
   };
@@ -158,13 +161,20 @@ export function EdgeDetails() {
     }
   };
 
+  const handleToggleCollapse = () => {
+    if (isCollapsed) {
+      expandEdge(edge.id);
+    } else {
+      collapseEdge(edge.id);
+    }
+  };
+
   // 候选节点列表（排除当前两端）
   const candidateNodes = nodes.filter((n) => n.id !== edge.source && n.id !== edge.target);
 
   return (
     <div
-      className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-50"
-      onPointerDownCapture={() => useRelationshipStore.getState().setEdgeMenu(null)}
+      className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-50 nodrag nopan nowheel"
     >
       {/* 头部 */}
       <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-gray-50">
@@ -326,7 +336,7 @@ export function EdgeDetails() {
                 <span className="font-medium text-gray-800">{targetNode?.data.name || '?'}</span>
               </div>
               <div className="text-[10px] text-gray-400 mt-0.5">
-                {edgeType === 'parent-child' ? '起点为父母，终点为子女' : edgeType === 'spouse' ? '配偶关系（双向）' : '自定义方向'}
+                {edgeType === 'parent-child' ? '起点为父母，终点为子女' : edgeType === 'spouse' ? '爱人关系（双向）' : '自定义方向'}
               </div>
             </div>
             <button
@@ -363,6 +373,28 @@ export function EdgeDetails() {
             <>
               <Unlink className="w-4 h-4" />
               断开关系
+            </>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={handleToggleCollapse}
+          className={clsx(
+            'w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium transition-colors',
+            isCollapsed
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100'
+          )}
+        >
+          {isCollapsed ? (
+            <>
+              <Eye className="w-4 h-4" />
+              展开关系
+            </>
+          ) : (
+            <>
+              <EyeOff className="w-4 h-4" />
+              隐藏关系
             </>
           )}
         </button>

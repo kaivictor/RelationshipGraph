@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useRelationshipStore, PersonData, Gender, toArrayValue } from '../store/useRelationshipStore';
+import { useRelationshipStore, PersonData, Gender, toArrayValue, computeInvisibleNodes } from '../store/useRelationshipStore';
 import { X, Plus, Trash2, Save, UserCheck, Heart, Upload, Loader2, Eye, EyeOff } from 'lucide-react';
 import { compressImageToBase64 } from '../utils/imageCompress';
 import { CollapsibleSection } from './CollapsibleSection';
@@ -130,7 +130,7 @@ function Field({
 }
 
 export function PersonDetails() {
-  const { nodes, selectedNodeId, setSelectedNodeId, updatePerson, updatePersonLive, deletePerson, addRelative, connectExisting, setAsSelf, getDescendantsForCascade } =
+  const { nodes, edges, selectedNodeId, setSelectedNodeId, updatePerson, updatePersonLive, deletePerson, addRelative, connectExisting, setAsSelf, getDescendantsForCascade, setCategoryFold, hiddenNodeIds, hidePerson } =
     useRelationshipStore();
   const customFields = useRelationshipStore((s) => s.displaySettings.customFields);
   const displaySettings = useRelationshipStore((s) => s.displaySettings);
@@ -155,6 +155,7 @@ export function PersonDetails() {
   const [newAttrKey, setNewAttrKey] = useState('');
   const [newAttrValue, setNewAttrValue] = useState('');
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [expandOtherFold, setExpandOtherFold] = useState(false);
 
   useEffect(() => {
     if (selectedNode) {
@@ -214,6 +215,11 @@ export function PersonDetails() {
   const liveUpdate = (data: Partial<PersonData>) => {
     setFormData((prev) => prev ? { ...prev, ...data } : prev);
     updatePersonLive(selectedNode.id, data);
+  };
+
+  // 隐藏当前人物（自己不可隐藏）：缺失该人（割点）后从"自己"不可达的人一并隐藏
+  const handleHide = () => {
+    hidePerson(selectedNode.id);
   };
 
   // 删除当前人物：若有可级联的晚辈，询问是否一并删除
@@ -329,8 +335,7 @@ export function PersonDetails() {
 
   return (
     <div
-      className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-50"
-      onPointerDownCapture={() => useRelationshipStore.getState().setEdgeMenu(null)}
+      className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-50 nodrag nopan nowheel"
     >
       <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-gray-50">
         <h2 className="font-semibold text-gray-800">详细信息</h2>
@@ -564,7 +569,7 @@ export function PersonDetails() {
         </div>
         </CollapsibleSection>
 
-        {/* 自定义属性（默认折叠） */}
+        {/* 自定义属性（默认隐藏） */}
         <CollapsibleSection title="自定义属性" defaultOpen={false} storageKey="details:custom">
           {/* 全局自定义属性 */}
           {customFields.length > 0 && (
@@ -696,7 +701,7 @@ export function PersonDetails() {
           </div>
         </CollapsibleSection>
 
-        {/* 添加关系（默认折叠） */}
+        {/* 添加关系（默认隐藏） */}
         <CollapsibleSection title="添加关系" defaultOpen={false} storageKey="details:addRel">
         <div>
           {!isAddingRelative ? (
@@ -783,7 +788,7 @@ export function PersonDetails() {
                       ))}
                   </select>
                   <p className="text-[10px] text-gray-400 mt-1">
-                    将选中的人物作为当前人物的{relativeType === 'parent' ? '父母' : relativeType === 'child' ? '子女' : relativeType === 'spouse' ? '配偶' : '自定义关系'}。已存在的关系不会重复创建。
+                    将选中的人物作为当前人物的{relativeType === 'parent' ? '父母' : relativeType === 'child' ? '子女' : relativeType === 'spouse' ? '爱人' : '自定义关系'}。已存在的关系不会重复创建。
                   </p>
                 </div>
               ) : (
@@ -848,6 +853,182 @@ export function PersonDetails() {
         </div>
         </CollapsibleSection>
 
+        {/* 关系隐藏 */}
+        {(() => {
+          if (!selectedNode) return null;
+          const nodeId = selectedNode.id;
+          // 统一不可见集合：隐藏边（桥语义）+ 隐藏节点（割点语义）共同作用下不可达的节点
+          const invisibleNodeIds = computeInvisibleNodes(nodes, edges, hiddenNodeIds);
+          // 成员是否不可见
+          const isMemberInvisible = (memberId: string) => invisibleNodeIds.has(memberId);
+          // 计算各类关系的隐藏状态（全部/部分/无）
+          // 单元 = 一条类别边：边已隐藏 或 对端成员不可见 → 记为已隐藏单元
+          type FoldState = 'all' | 'partial' | 'none';
+          const computeFoldState = (
+            predicate: (e: typeof edges[number]) => boolean
+          ): FoldState => {
+            const matched = edges.filter((e) => {
+              const involvesNode = e.source === nodeId || e.target === nodeId;
+              return involvesNode && predicate(e);
+            });
+            if (matched.length === 0) return 'none';
+            let foldedCount = 0;
+            for (const e of matched) {
+              const member = e.source === nodeId ? e.target : e.source;
+              const edgeCollapsed = !!(e.data as { collapsed?: boolean })?.collapsed;
+              if (edgeCollapsed || isMemberInvisible(member)) foldedCount++;
+            }
+            if (foldedCount === 0) return 'none';
+            if (foldedCount === matched.length) return 'all';
+            return 'partial';
+          };
+
+          // 隐藏操作封装：守卫失败时提示
+          const doFold = (category: string, state: 'all' | 'none') => {
+            const r = setCategoryFold(nodeId, category, state);
+            if (!r.ok) alert(r.reason);
+          };
+
+          const parentsState = computeFoldState((e) => (e.data as { type?: string })?.type === 'parent-child' && e.target === nodeId);
+          const childrenState = computeFoldState((e) => (e.data as { type?: string })?.type === 'parent-child' && e.source === nodeId);
+          const spouseState = computeFoldState((e) => (e.data as { type?: string })?.type === 'spouse');
+          const otherState = computeFoldState((e) => (e.data as { type?: string })?.type === 'custom');
+
+          // 收集"其他"下的自定义关系标签
+          const customLabels = Array.from(new Set(
+            edges
+              .filter((e) => {
+                const involvesNode = e.source === nodeId || e.target === nodeId;
+                return involvesNode && (e.data as { type?: string })?.type === 'custom';
+              })
+              .map((e) => (e.data as { customLabel?: string })?.customLabel || '自定义')
+          ));
+
+          // 隐藏行组件
+          const FoldRow = ({
+            label,
+            state,
+            onAll,
+            onNone,
+            expandable,
+            expanded,
+            onToggleExpand,
+          }: {
+            label: string;
+            state: FoldState;
+            onAll: () => void;
+            onNone: () => void;
+            expandable?: boolean;
+            expanded?: boolean;
+            onToggleExpand?: () => void;
+          }) => (
+            <div className="flex items-center justify-between py-1">
+              <div className="flex items-center gap-1.5 min-w-0">
+                {expandable ? (
+                  <button
+                    type="button"
+                    onClick={onToggleExpand}
+                    className={
+                      'text-xs truncate transition-colors ' +
+                      (expanded ? 'text-blue-600 font-medium' : 'text-gray-600 hover:text-blue-600')
+                    }
+                    title={expanded ? '收起子选项' : '展开子选项'}
+                  >
+                    {label}
+                  </button>
+                ) : (
+                  <span className="text-xs text-gray-600 truncate">{label}</span>
+                )}
+                <span
+                  className={
+                    'text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ' +
+                    (state === 'all'
+                      ? 'bg-orange-100 text-orange-600'
+                      : state === 'partial'
+                        ? 'bg-yellow-100 text-yellow-700'
+                        : 'bg-gray-100 text-gray-400')
+                  }
+                >
+                  {state === 'all' ? '全部' : state === 'partial' ? '部分' : '无'}
+                </span>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={onAll}
+                  disabled={state === 'all'}
+                  className="px-2 py-0.5 text-[10px] rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  全部
+                </button>
+                <button
+                  type="button"
+                  onClick={onNone}
+                  disabled={state === 'none'}
+                  className="px-2 py-0.5 text-[10px] rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  无
+                </button>
+              </div>
+            </div>
+          );
+
+          return (
+            <CollapsibleSection title="关系隐藏" defaultOpen={false} storageKey="details:relCollapse">
+              <p className="text-[10px] text-gray-400 mb-2">
+                隐藏 = 概念上断开这些关系，断开后与"自己"不连通的角色全部隐藏（含"隐藏此人"的角色）。取消请选"无"。
+              </p>
+              <FoldRow
+                label="隐藏父母"
+                state={parentsState}
+                onAll={() => doFold('parents', 'all')}
+                onNone={() => doFold('parents', 'none')}
+              />
+              <FoldRow
+                label="隐藏子女"
+                state={childrenState}
+                onAll={() => doFold('children', 'all')}
+                onNone={() => doFold('children', 'none')}
+              />
+              <FoldRow
+                label="隐藏爱人"
+                state={spouseState}
+                onAll={() => doFold('spouse', 'all')}
+                onNone={() => doFold('spouse', 'none')}
+              />
+              <FoldRow
+                label="隐藏其他"
+                state={otherState}
+                onAll={() => doFold('other', 'all')}
+                onNone={() => doFold('other', 'none')}
+                expandable={customLabels.length > 0}
+                expanded={expandOtherFold}
+                onToggleExpand={() => setExpandOtherFold((v) => !v)}
+              />
+              {expandOtherFold && customLabels.length > 0 && (
+                <div className="ml-4 pl-2 border-l border-gray-200 mt-1 space-y-0.5">
+                  {customLabels.map((label) => {
+                    const subState = computeFoldState(
+                      (e) =>
+                        (e.data as { type?: string })?.type === 'custom' &&
+                        ((e.data as { customLabel?: string })?.customLabel || '自定义') === label
+                    );
+                    return (
+                      <FoldRow
+                        key={label}
+                        label={`隐藏${label}`}
+                        state={subState}
+                        onAll={() => doFold(label, 'all')}
+                        onNone={() => doFold(label, 'none')}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </CollapsibleSection>
+          );
+        })()}
+
         {/* 底部操作区：设为我自己 + 离世设置（常驻可见） */}
         <div className="mt-4 pt-4 border-t border-gray-200 space-y-4">
           {/* 设为我自己 */}
@@ -902,11 +1083,21 @@ export function PersonDetails() {
           </div>
         </div>
 
-        {/* 删除此人记录（末尾独立一行，自己不可删） */}
+        {/* 隐藏此人 + 删除此人记录（末尾独立，自己不可操作） */}
+        {!formData.isSelf && (
+          <button
+            onClick={handleHide}
+            className="mt-6 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-amber-600 border border-amber-300 rounded-md hover:bg-amber-50 transition-colors"
+            title="隐藏此人：仅通过此人连接到我的角色也会一并隐藏"
+          >
+            <EyeOff className="w-3.5 h-3.5" />
+            隐藏此人
+          </button>
+        )}
         {!formData.isSelf && (
           <button
             onClick={handleDelete}
-            className="mt-6 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-red-600 border border-red-300 rounded-md hover:bg-red-50 transition-colors"
+            className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-red-600 border border-red-300 rounded-md hover:bg-red-50 transition-colors"
             title="删除此人记录"
           >
             <Trash2 className="w-3.5 h-3.5" />

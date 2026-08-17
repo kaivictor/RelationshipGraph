@@ -104,9 +104,9 @@ function getAge(birthDate: string): number {
 /**
  * 根据路径、目标节点、自己节点计算称谓
  *
- * 路径方向：up=父母, down=子女, spouse=配偶, sibling=兄弟姐妹
+ * 路径方向：up=父母, down=子女, spouse=爱人, sibling=兄弟姐妹
  * 路径步骤记录的是每一步「到达的节点」，因此：
- *   s0 = 第一步到达的节点（如 up 时为父母、spouse 时为配偶）
+ *   s0 = 第一步到达的节点（如 up 时为父母、spouse 时为爱人）
  *   s1 = 第二步到达的节点
  *   s2 = 第三步到达的节点
  * 计算规则：优先匹配长路径，从最具体的称谓开始判断
@@ -149,7 +149,7 @@ function getTitle(
   if (dirs === 'spouse') {
     if (targetGender === 'female') return '妻子';
     if (targetGender === 'male') return '丈夫';
-    return '配偶';
+    return '爱人';
   }
   if (dirs === 'sibling') {
     if (targetGender === 'male') return targetIsOlder ? '哥哥' : '弟弟';
@@ -216,14 +216,14 @@ function getTitle(
   }
 
   // ============ 继父母 ============
-  // up-spouse: s0=父母, target=父母的配偶（继父/继母）
+  // up-spouse: s0=父母, target=父母的爱人（继父/继母）
   if (dirs === 'up-spouse') {
     const parentGender = s0.gender;
     if (parentGender === 'male') {
-      // 父亲的配偶（非母亲）= 继母
+      // 父亲的爱人（非母亲）= 继母
       return targetGender === 'female' ? '继母' : '长辈';
     } else {
-      // 母亲的配偶（非父亲）= 继父
+      // 母亲的爱人（非父亲）= 继父
       return targetGender === 'male' ? '继父' : '长辈';
     }
   }
@@ -264,7 +264,7 @@ function getTitle(
   }
 
   // ============ 公婆岳父母 ============
-  // spouse-up: s0=配偶, target=配偶的父母
+  // spouse-up: s0=爱人, target=爱人的父母
   if (dirs === 'spouse-up') {
     const spouseGender = s0.gender;
     if (spouseGender === 'female') {
@@ -276,11 +276,11 @@ function getTitle(
       if (targetGender === 'male') return '公公';
       if (targetGender === 'female') return '婆婆';
     }
-    return '配偶父母';
+    return '爱人父母';
   }
 
   // ============ 继子女 ============
-  // spouse-down: s0=配偶, target=配偶的子女（继子/继女）
+  // spouse-down: s0=爱人, target=爱人的子女（继子/继女）
   if (dirs === 'spouse-down') {
     if (targetGender === 'male') return '继子';
     if (targetGender === 'female') return '继女';
@@ -288,7 +288,7 @@ function getTitle(
   }
 
   // ============ 儿媳女婿 ============
-  // down-spouse: s0=子女, target=子女的配偶
+  // down-spouse: s0=子女, target=子女的爱人
   if (dirs === 'down-spouse') {
     const childGender = s0.gender;
     if (childGender === 'male') {
@@ -300,9 +300,9 @@ function getTitle(
     }
   }
 
-  // ============ 兄弟姐妹的配偶 ============
-  // sibling-spouse: s0=兄弟姐妹, target=兄弟姐妹的配偶
-  // up-down-spouse: s0=父母, s1=兄弟姐妹, target=兄弟姐妹的配偶
+  // ============ 兄弟姐妹的爱人 ============
+  // sibling-spouse: s0=兄弟姐妹, target=兄弟姐妹的爱人
+  // up-down-spouse: s0=父母, s1=兄弟姐妹, target=兄弟姐妹的爱人
   if (dirs === 'sibling-spouse' || dirs === 'up-down-spouse') {
     const siblingStep = dirs === 'sibling-spouse' ? s0 : s1;
     const siblingGender = siblingStep.gender;
@@ -318,16 +318,16 @@ function getTitle(
     }
   }
 
-  // ============ 配偶的兄弟姐妹 ============
-  // spouse-sibling: s0=配偶, s1=配偶的兄弟姐妹(target)
-  // spouse-up-down: s0=配偶, s1=配偶的父母, s2=配偶的兄弟姐妹(target)
+  // ============ 爱人的兄弟姐妹 ============
+  // spouse-sibling: s0=爱人, s1=爱人的兄弟姐妹(target)
+  // spouse-up-down: s0=爱人, s1=爱人的父母, s2=爱人的兄弟姐妹(target)
   if (dirs === 'spouse-sibling' || dirs === 'spouse-up-down') {
     const spouseGender = s0.gender;
     const spouseAge = s0.age;
     const siblingStep = dirs === 'spouse-sibling' ? s1 : s2;
     const siblingGender = siblingStep?.gender;
     const siblingAge = siblingStep?.age;
-    // 相对于配偶判断长幼
+    // 相对于爱人判断长幼
     const siblingIsOlderThanSpouse = siblingAge !== undefined && siblingAge < spouseAge;
 
     if (spouseGender === 'female') {
@@ -386,8 +386,8 @@ function getTitle(
     return '晚辈';
   }
 
-  // ============ 伯叔舅姨姑的配偶 ============
-  // up-up-down-spouse: s0=父母, s1=祖父母, s2=伯叔舅姨姑, target=其配偶
+  // ============ 伯叔舅姨姑的爱人 ============
+  // up-up-down-spouse: s0=父母, s1=祖父母, s2=伯叔舅姨姑, target=其爱人
   if (dirs === 'up-up-down-spouse') {
     const uncleAuntGender = s2.gender;
     const uncleAuntAge = s2.age;
@@ -417,8 +417,8 @@ function getTitle(
     }
   }
 
-  // ============ 孙辈的配偶 ============
-  // down-down-spouse: s0=子女, s1=孙辈, target=孙辈的配偶
+  // ============ 孙辈的爱人 ============
+  // down-down-spouse: s0=子女, s1=孙辈, target=孙辈的爱人
   if (dirs === 'down-down-spouse') {
     const grandchildGender = s1.gender;
     if (grandchildGender === 'male') {
@@ -428,16 +428,16 @@ function getTitle(
     }
   }
 
-  // ============ 曾孙辈的配偶 ============
-  // down-down-down-spouse: s0=子女, s1=孙辈, s2=曾孙辈, target=其配偶
+  // ============ 曾孙辈的爱人 ============
+  // down-down-down-spouse: s0=子女, s1=孙辈, s2=曾孙辈, target=其爱人
   if (dirs === 'down-down-down-spouse') {
     const ggcGender = s2.gender;
     if (ggcGender === 'male') return '曾孙媳';
     return '曾孙女婿';
   }
 
-  // ============ 配偶的祖辈 ============
-  // spouse-up-up: s0=配偶, s1=配偶的父母, target=配偶的祖父母
+  // ============ 爱人的祖辈 ============
+  // spouse-up-up: s0=爱人, s1=爱人的父母, target=爱人的祖父母
   if (dirs === 'spouse-up-up') {
     const spouseGender = s0.gender;
     const parentGender = s1.gender;
@@ -460,7 +460,7 @@ function getTitle(
         if (targetGender === 'female') return '婆婆的母亲';
       }
     }
-    return '配偶祖辈';
+    return '爱人祖辈';
   }
 
   // ============ 兄弟姐妹的孙辈 ============
@@ -495,14 +495,14 @@ function getTitle(
     return '祖辈';
   }
 
-  // ============ 曾祖辈子女的配偶 ============
-  // up-up-up-down-spouse: 祖父兄弟姐妹的配偶（伯祖母/叔祖母/姑祖父/舅祖母/姨祖父）
+  // ============ 曾祖辈子女的爱人 ============
+  // up-up-up-down-spouse: 祖父兄弟姐妹的爱人（伯祖母/叔祖母/姑祖父/舅祖母/姨祖父）
   if (dirs === 'up-up-up-down-spouse') {
     const parentGender = s0.gender;
     const grandparentGender = s1.gender;
-    const targetSpouseGender = targetGender; // 配偶本身性别
+    const targetSpouseGender = targetGender; // 爱人本身性别
     if (parentGender === 'male' && grandparentGender === 'male') {
-      // 祖父的兄弟姐妹的配偶
+      // 祖父的兄弟姐妹的爱人
       if (targetSpouseGender === 'female') return '伯祖母'; // 伯祖父/叔祖父的妻子统称，简化
       if (targetSpouseGender === 'male') return '姑祖父';
     } else if (parentGender === 'female' && grandparentGender === 'male') {

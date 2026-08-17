@@ -1,7 +1,7 @@
 /**
  * 数据序列化工具：JSON / XML / CSV 导出与导入
  * - JSON / XML：完整数据（含设置、viewport）
- * - CSV：仅人物信息 + 关系（父亲ID/母亲ID/配偶ID），不包含设置
+ * - CSV：仅人物信息 + 关系（父亲ID/母亲ID/爱人ID），不包含设置
  */
 import type { Edge } from '@xyflow/react';
 import type { PersonNode, DisplaySettings, ViewportState, EdgeData, PersonData } from '../store/useRelationshipStore';
@@ -20,6 +20,7 @@ export type ExportData = {
   edges: Edge[];
   displaySettings: DisplaySettings;
   viewport: ViewportState;
+  hiddenNodeIds?: string[]; // 手动隐藏的节点（"隐藏此人"）
 };
 
 /* ============ JSON ============ */
@@ -56,7 +57,7 @@ const PERSON_FIELDS: (keyof PersonData)[] = [
 ];
 
 export function exportToXML(data: ExportData): string {
-  const { nodes, edges, displaySettings, viewport } = data;
+  const { nodes, edges, displaySettings, viewport, hiddenNodeIds } = data;
   const lines: string[] = [];
   lines.push('<?xml version="1.0" encoding="UTF-8"?>');
   lines.push('<relationship>');
@@ -112,7 +113,7 @@ export function exportToXML(data: ExportData): string {
     ].join(' ');
     const inner: string[] = [];
     if (d) {
-      inner.push(`      <edgeData type="${escapeXml(d.type)}"${d.disconnected ? ` disconnected="true"` : ''}${d.customLabel ? ` customLabel="${escapeXml(d.customLabel)}"` : ''} />`);
+      inner.push(`      <edgeData type="${escapeXml(d.type)}"${d.disconnected ? ` disconnected="true"` : ''}${d.collapsed ? ` collapsed="true"` : ''}${d.customLabel ? ` customLabel="${escapeXml(d.customLabel)}"` : ''} />`);
     }
     lines.push(`    <edge ${attrs}>`);
     lines.push(...inner);
@@ -154,6 +155,15 @@ export function exportToXML(data: ExportData): string {
 
   // viewport
   lines.push(`  <viewport x="${viewport.x}" y="${viewport.y}" zoom="${viewport.zoom}" />`);
+
+  // 手动隐藏节点（"隐藏此人"）
+  if (hiddenNodeIds && hiddenNodeIds.length > 0) {
+    lines.push('  <hiddenNodes>');
+    for (const id of hiddenNodeIds) {
+      lines.push(`    <item>${escapeXml(id)}</item>`);
+    }
+    lines.push('  </hiddenNodes>');
+  }
 
   lines.push('</relationship>');
   return lines.join('\n');
@@ -247,6 +257,7 @@ export function importFromXML(text: string): ExportData {
       ? {
           type: (edEl.getAttribute('type') as EdgeData['type']) || 'parent-child',
           disconnected: edEl.getAttribute('disconnected') === 'true' || undefined,
+          collapsed: edEl.getAttribute('collapsed') === 'true' || undefined,
           customLabel: edEl.getAttribute('customLabel') || undefined,
         }
       : undefined;
@@ -277,7 +288,7 @@ export function importFromXML(text: string): ExportData {
       } else {
         const val = field.textContent || '';
         // 布尔字段
-        if (['showNamePinyin','showFormerName','showRelationship','showPopularName','showAvatar','showBirthDate','showAge','showEducation','showPhone','showQq','showWechat','showEmail','showAddress','showLicensePlate','showBilibili','showDiscord','showReddit','showThreads','showWhatsapp','showDouyin','showTwitter','showXiaohongshu','showGrayOnDisconnect','showEdgeRelationship','persistToBrowser','deathDateReplaceBirth','showCanvasHint'].includes(tag)) {
+        if (['showNamePinyin','showFormerName','showRelationship','showPopularName','showAvatar','showBirthDate','showAge','showEducation','showPhone','showQq','showWechat','showEmail','showAddress','showLicensePlate','showBilibili','showDiscord','showReddit','showThreads','showWhatsapp','showDouyin','showTwitter','showXiaohongshu','showGrayOnDisconnect','showEdgeRelationship','persistToBrowser','deathDateReplaceBirth','showCanvasHint','showStatsBadge'].includes(tag)) {
           (displaySettings as Record<string, unknown>)[tag] = val === 'true';
         } else if (tag === 'verticalGapScale') {
           (displaySettings as Record<string, unknown>)[tag] = Number(val);
@@ -296,7 +307,13 @@ export function importFromXML(text: string): ExportData {
       }
     : { x: 0, y: 0, zoom: 1 };
 
-  return { nodes, edges, displaySettings: displaySettings as DisplaySettings, viewport };
+  // 解析手动隐藏节点（"隐藏此人"）
+  const hiddenNodesEl = root.querySelector(':scope > hiddenNodes');
+  const hiddenNodeIds = hiddenNodesEl
+    ? Array.from(hiddenNodesEl.querySelectorAll(':scope > item')).map((i) => i.textContent || '').filter(Boolean)
+    : undefined;
+
+  return { nodes, edges, displaySettings: displaySettings as DisplaySettings, viewport, hiddenNodeIds };
 }
 
 /* ============ CSV ============ */
@@ -322,7 +339,7 @@ function arrayToCsvCell(v: unknown): string {
 
 export function exportToCSV(data: ExportData): string {
   const { nodes, edges } = data;
-  // 构建关系映射（支持多个父/母/配偶）
+  // 构建关系映射（支持多个父/母/爱人）
   const fatherMap = new Map<string, string[]>(); // childId -> fatherId[]
   const motherMap = new Map<string, string[]>(); // childId -> motherId[]
   const spouseMap = new Map<string, string[]>(); // personId -> spouseId[]
@@ -359,7 +376,7 @@ export function exportToCSV(data: ExportData): string {
     '出生年月', '性别', '文化程度', '手机号', 'QQ号', '微信号', '邮箱号', '住址', '车牌号',
     '哔哩哔哩', 'Discord', 'Reddit', 'Threads', 'WhatsApp', '抖音', '推特', '小红书',
     '已离世', '离世原因', '死亡日期',
-    '父亲ID', '母亲ID', '配偶ID',
+    '父亲ID', '母亲ID', '爱人ID',
   ];
   const lines: string[] = [headers.join(',')];
 

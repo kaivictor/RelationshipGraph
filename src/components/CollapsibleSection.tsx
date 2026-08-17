@@ -10,7 +10,7 @@ type Props = {
   children: ReactNode;
   className?: string;
   /**
-   * 持久化 key：传入后，折叠状态会保存到 localStorage，
+   * 持久化 key：传入后，隐藏状态会保存到 localStorage，
    * key 建议格式 "panel:sectionName"（如 "settings:basic"）。
    * 不传则仅使用内存状态（刷新后回到 defaultOpen）。
    */
