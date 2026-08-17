@@ -61,6 +61,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: android/app/build/outputs/apk/release/app-release.apk
-          generate_release_notes: true
+          # 用触发构建的那次 commit 消息作为 Release 说明
+          body: |
+            ${{ github.event.head_commit.message }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

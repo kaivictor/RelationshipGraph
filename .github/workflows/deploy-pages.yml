@@ -35,8 +35,9 @@ jobs:
           npm install
           npm run build
         env:
-          # 项目站点部署在 /<repo>/ 子路径下，需覆盖 Vite 默认的 base
-          VITE_BASE: /${{ github.event.repository.name }}/
+          # 配置了自定义域名（存在 public/CNAME）时部署在根路径，base 用 /；
+          # 否则是项目站点（<user>.github.io/<repo>/），base 需带仓库名
+          VITE_BASE: ${{ hashFiles('public/CNAME') != '' && '/' || format('/{0}/', github.event.repository.name) }}
 
       - name: 上传构建产物
         uses: actions/upload-pages-artifact@v3
