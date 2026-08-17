@@ -132,6 +132,7 @@ export type DisplaySettings = {
   showEdgeRelationship: boolean;
   persistToBrowser: boolean;
   deathDateReplaceBirth: boolean; // 离世日期代替出生日期
+  showCanvasHint: boolean; // 是否显示画布左上角提示
 };
 
 export type ViewportState = {
@@ -191,6 +192,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   showEdgeRelationship: true,
   persistToBrowser: true,
   deathDateReplaceBirth: true,
+  showCanvasHint: true,
 };
 
 interface FamilyState {
@@ -220,6 +222,10 @@ interface FamilyState {
   connectExisting: (sourceId: string, targetId: string, type: 'parent' | 'child' | 'spouse' | 'custom', customLabel?: string) => void;
   setSelectedNodeId: (id: string | null) => void;
   setSelectedEdgeId: (id: string | null) => void;
+  /** 切换某节点的选中状态（累加选择，不清除其他节点） */
+  toggleNodeSelected: (id: string) => void;
+  /** 设置多选：仅给定 ID 的节点为选中，同时更新 selectedNodeId 为最后一个 */
+  applyMultiSelect: (ids: string[]) => void;
   updateDisplaySettings: (patch: Partial<DisplaySettings>) => void;
   disconnectEdge: (edgeId: string) => void;
   reconnectEdge: (edgeId: string) => void;
@@ -922,8 +928,58 @@ export const useFamilyStore = create<FamilyState>((set, get) => {
     set({ nodes: newNodes });
   },
 
-  setSelectedNodeId: (id) => set({ selectedNodeId: id }),
-  setSelectedEdgeId: (id) => set({ selectedEdgeId: id }),
+  setSelectedNodeId: (id) => {
+    if (id === null) {
+      // 关闭面板/取消选中：同步清除节点的蓝色边框（selected 视觉状态）
+      set({
+        selectedNodeId: null,
+        nodes: get().nodes.map(n => ({ ...n, selected: false })),
+      });
+    } else {
+      // 选中节点：清除边的选中，避免两个面板同时显示
+      set({
+        selectedNodeId: id,
+        selectedEdgeId: null,
+        edges: get().edges.map(e => ({ ...e, selected: false })),
+      });
+    }
+  },
+  setSelectedEdgeId: (id) => {
+    if (id === null) {
+      // 关闭面板/取消选中：同步清除边的选中状态
+      set({
+        selectedEdgeId: null,
+        edges: get().edges.map(e => ({ ...e, selected: false })),
+      });
+    } else {
+      // 选中边：清除节点的选中，避免两个面板同时显示
+      set({
+        selectedEdgeId: id,
+        selectedNodeId: null,
+        nodes: get().nodes.map(n => ({ ...n, selected: false })),
+      });
+    }
+  },
+
+  // 长按多选：切换某节点选中状态（不影响其他节点）
+  toggleNodeSelected: (id) => {
+    set({
+      nodes: get().nodes.map(n => n.id === id ? { ...n, selected: !n.selected } : n),
+      selectedEdgeId: null,
+      edges: get().edges.map(e => ({ ...e, selected: false })),
+    });
+  },
+
+  // 长按多选完成后：恢复多选状态（被 ReactFlow 单击覆盖后重新应用）
+  applyMultiSelect: (ids) => {
+    const idSet = new Set(ids);
+    set({
+      nodes: get().nodes.map(n => ({ ...n, selected: idSet.has(n.id) })),
+      selectedNodeId: ids.length > 0 ? ids[ids.length - 1] : null,
+      selectedEdgeId: null,
+      edges: get().edges.map(e => ({ ...e, selected: false })),
+    });
+  },
 
   updateDisplaySettings: (patch) => {
     const oldSettings = get().displaySettings;

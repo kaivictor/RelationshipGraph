@@ -377,6 +377,12 @@ export function SettingsPanel() {
             checked={displaySettings.showGrayOnDisconnect}
             onChange={(v) => updateDisplaySettings({ showGrayOnDisconnect: v })}
           />
+          <Toggle
+            label="显示画布提示"
+            description="在画布左上角显示操作提示（如「点击节点查看详情」、连线模式状态等）"
+            checked={displaySettings.showCanvasHint}
+            onChange={(v) => updateDisplaySettings({ showCanvasHint: v })}
+          />
           <div className="mt-3">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium text-gray-700">垂直间距比例</span>

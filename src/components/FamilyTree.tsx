@@ -38,6 +38,8 @@ export default function FamilyTree() {
     onConnect,
     setSelectedNodeId,
     setSelectedEdgeId,
+    toggleNodeSelected,
+    applyMultiSelect,
     layoutGraph,
     exportData,
     importData,
@@ -50,6 +52,8 @@ export default function FamilyTree() {
     resetConnectSelection,
     setShowHelpPage,
   } = useFamilyStore();
+
+  const showCanvasHint = useFamilyStore((s) => s.displaySettings.showCanvasHint);
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { fitView, setViewport: setRFViewport } = useReactFlow();
@@ -66,6 +70,11 @@ export default function FamilyTree() {
   const [showConnectMenu, setShowConnectMenu] = useState(false);
   // 连线模式：toast 提示
   const [connectToast, setConnectToast] = useState<string | null>(null);
+  // 长按多选：计时器与状态
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const longPressTriggeredRef = useRef(false);
+  const longPressSavedIdsRef = useRef<string[]>([]);
 
   const { disconnectEdge, reconnectEdge, viewport: savedViewport, setViewport } = useFamilyStore();
   const undo = useFamilyStore((s) => s.undo);
@@ -130,10 +139,59 @@ export default function FamilyTree() {
         }
         return;
       }
+      // 长按多选：恢复被单击覆盖的多选状态
+      if (longPressTriggeredRef.current) {
+        longPressTriggeredRef.current = false;
+        const ids = [...longPressSavedIdsRef.current, node.id];
+        applyMultiSelect(ids);
+        longPressSavedIdsRef.current = [];
+        return;
+      }
       setSelectedNodeId(node.id);
     },
-    [setSelectedNodeId, connectionMode, clickNodeInConnectMode]
+    [setSelectedNodeId, connectionMode, clickNodeInConnectMode, applyMultiSelect]
   );
+
+  // 长按多选：pointerdown 检测
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    if (connectionMode !== 'off') return; // 连线模式下不触发长按多选
+    const target = e.target as HTMLElement;
+    const nodeEl = target.closest('.react-flow__node') as HTMLElement | null;
+    if (!nodeEl) return;
+    const nodeId = nodeEl.getAttribute('data-id');
+    if (!nodeId) return;
+
+    longPressStartRef.current = { x: e.clientX, y: e.clientY };
+    longPressTriggeredRef.current = false;
+    longPressSavedIdsRef.current = [];
+
+    longPressTimerRef.current = window.setTimeout(() => {
+      // 长按触发：保存当前已选中的节点 ID，然后切换该节点选中状态
+      longPressTriggeredRef.current = true;
+      const state = useFamilyStore.getState();
+      longPressSavedIdsRef.current = state.nodes.filter(n => n.selected).map(n => n.id);
+      state.toggleNodeSelected(nodeId);
+    }, 500);
+  }, [connectionMode]);
+
+  const onPointerUp = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressStartRef.current = null;
+  }, []);
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (longPressTimerRef.current !== null && longPressStartRef.current) {
+      const dx = e.clientX - longPressStartRef.current.x;
+      const dy = e.clientY - longPressStartRef.current.y;
+      if (Math.sqrt(dx * dx + dy * dy) > 10) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+    }
+  }, []);
 
   const onPaneClick = useCallback(() => {
     // 连线模式下点击空白：取消当前起点
@@ -378,7 +436,14 @@ export default function FamilyTree() {
   };
 
   return (
-    <div className="w-full h-full relative" ref={reactFlowWrapper}>
+    <div
+      className="w-full h-full relative"
+      ref={reactFlowWrapper}
+      onPointerDown={onPointerDown}
+      onPointerUp={onPointerUp}
+      onPointerMove={onPointerMove}
+      onPointerLeave={onPointerUp}
+    >
       <ReactFlow
         nodes={connectFirstNodeId
           ? nodes.map((n) => n.id === connectFirstNodeId
@@ -662,14 +727,14 @@ export default function FamilyTree() {
         );
       })()}
       
-      {!selectedNodeId && connectionMode === 'off' && (
+      {showCanvasHint && !selectedNodeId && connectionMode === 'off' && (
         <div className="export-hide absolute top-4 left-4 bg-white/80 backdrop-blur-sm px-4 py-3 rounded-lg border border-gray-200 shadow-sm text-sm text-gray-600 pointer-events-none z-10">
           点击节点查看详情并添加亲属
         </div>
       )}
 
       {/* 连线模式状态条 */}
-      {connectionMode !== 'off' && (
+      {showCanvasHint && connectionMode !== 'off' && (
         <div className="export-hide absolute top-4 left-4 bg-blue-600/95 backdrop-blur-sm px-4 py-3 rounded-lg border border-blue-500 shadow-lg text-sm text-white z-10 pointer-events-none">
           <div className="flex items-center gap-2 font-medium">
             <Spline className="w-4 h-4" />

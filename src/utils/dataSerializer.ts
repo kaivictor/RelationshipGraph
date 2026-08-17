@@ -276,7 +276,7 @@ export function importFromXML(text: string): ExportData {
       } else {
         const val = field.textContent || '';
         // 布尔字段
-        if (['showNamePinyin','showFormerName','showRelationship','showPopularName','showAvatar','showBirthDate','showAge','showEducation','showPhone','showQq','showWechat','showEmail','showAddress','showLicensePlate','showBilibili','showDiscord','showReddit','showThreads','showWhatsapp','showDouyin','showTwitter','showXiaohongshu','showGrayOnDisconnect','showEdgeRelationship','persistToBrowser','deathDateReplaceBirth'].includes(tag)) {
+        if (['showNamePinyin','showFormerName','showRelationship','showPopularName','showAvatar','showBirthDate','showAge','showEducation','showPhone','showQq','showWechat','showEmail','showAddress','showLicensePlate','showBilibili','showDiscord','showReddit','showThreads','showWhatsapp','showDouyin','showTwitter','showXiaohongshu','showGrayOnDisconnect','showEdgeRelationship','persistToBrowser','deathDateReplaceBirth','showCanvasHint'].includes(tag)) {
           (displaySettings as Record<string, unknown>)[tag] = val === 'true';
         } else if (tag === 'verticalGapScale') {
           (displaySettings as Record<string, unknown>)[tag] = Number(val);
