@@ -7,6 +7,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# 创建 Release 需要写权限（push tag 触发的 GITHUB_TOKEN 默认为只读）
+permissions:
+  contents: write
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
