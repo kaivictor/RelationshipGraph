@@ -1,5 +1,5 @@
 import { BaseEdge, EdgeLabelRenderer, getStraightPath, EdgeProps } from '@xyflow/react';
-import { useRelationshipStore, buildEdgeAriaLabel } from '../store/useRelationshipStore';
+import { buildEdgeAriaLabel } from '../store/useRelationshipStore';
 
 export default function CustomEdge({
   id,
@@ -22,10 +22,10 @@ export default function CustomEdge({
 
   const disconnected = (data as { disconnected?: boolean })?.disconnected;
   const customLabel = (data as { customLabel?: string })?.customLabel;
-  const nodes = useRelationshipStore((s) => s.nodes);
+  // 不再订阅整个 nodes 数组，避免拖动任意节点时所有边重渲染；
+  // 名称/性别改为由 buildEdgeAriaLabel 内部按需（带缓存）读取。
   const ariaText = buildEdgeAriaLabel(
-    { id, source, target, data } as Parameters<typeof buildEdgeAriaLabel>[0],
-    nodes
+    { id, source, target, data } as Parameters<typeof buildEdgeAriaLabel>[0]
   );
 
   return (

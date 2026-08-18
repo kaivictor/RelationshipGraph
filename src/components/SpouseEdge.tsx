@@ -1,6 +1,6 @@
 import { BaseEdge, EdgeLabelRenderer, getStraightPath, EdgeProps } from '@xyflow/react';
 import { Heart, HeartCrack } from 'lucide-react';
-import { useRelationshipStore, buildEdgeAriaLabel } from '../store/useRelationshipStore';
+import { buildEdgeAriaLabel } from '../store/useRelationshipStore';
 
 export default function SpouseEdge({
   id,
@@ -22,10 +22,8 @@ export default function SpouseEdge({
   });
 
   const disconnected = (data as { disconnected?: boolean })?.disconnected;
-  const nodes = useRelationshipStore((s) => s.nodes);
   const ariaText = buildEdgeAriaLabel(
-    { id, source, target, data } as Parameters<typeof buildEdgeAriaLabel>[0],
-    nodes
+    { id, source, target, data } as Parameters<typeof buildEdgeAriaLabel>[0]
   );
 
   return (

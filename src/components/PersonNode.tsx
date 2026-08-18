@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { PersonData, useRelationshipStore, toArrayValue } from '../store/useRelationshipStore';
 import { User, UserRound, UserRoundSearch } from 'lucide-react';
@@ -128,10 +129,14 @@ const ICON_FIELDS = {
   xiaohongshu: XiaohongshuIcon,
 };
 
-export function PersonNodeComponent({ id, data, selected }: { id: string; data: PersonData; selected: boolean }) {
+// 用 memo 包裹：组件仅在 props（id/data/selected）或内部订阅的 store 切片变化时才重渲染，
+// 避免父级（画布）无关重渲染波及所有节点；配合 React Flow 内部的节点 memo 进一步减少重渲染。
+export const PersonNodeComponent = memo(function PersonNodeComponent({ id, data, selected }: { id: string; data: PersonData; selected: boolean }) {
   const isEn = useLang() === 'en';
   const displaySettings = useRelationshipStore((state) => state.displaySettings);
   const isGrayed = useRelationshipStore((state) => state.grayedNodeIds.has(id));
+  // 订阅 edges 以正确计算关系统计；拖动节点时 edges 引用不变，因此不会触发重渲染，
+  // 与原行为一致（仅真正的连线增删改才会重算 stats）。
   const edges = useRelationshipStore((state) => state.edges);
 
   // 关系统计：父母 / 子女 / 爱人 / 其他
@@ -485,4 +490,4 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
       />
     </div>
   );
-}
+});

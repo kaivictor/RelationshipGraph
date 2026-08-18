@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useRelationshipStore, EdgeData, PersonNode } from '../store/useRelationshipStore';
 import { X, Unlink, Link2, Trash2, ArrowRight, ArrowLeftRight, User, UserRound, UserRoundSearch, EyeOff, Eye } from 'lucide-react';
 import clsx from 'clsx';
@@ -49,7 +49,7 @@ function NodeCard({ node, active }: { node: PersonNode | undefined; active?: boo
             )}
           />
           <span className="text-[10px] text-gray-400">
-            {node.data.gender === 'male' ? '男' : node.data.gender === 'female' ? '女' : '未知'}
+            {node.data.gender === 'male' ? tt('男') : node.data.gender === 'female' ? tt('女') : tt('未知')}
           </span>
         </div>
       </div>
@@ -57,30 +57,98 @@ function NodeCard({ node, active }: { node: PersonNode | undefined; active?: boo
   );
 }
 
+// 端点行：未编辑显示「卡片 + [修改]」；点击修改后原地展开「<select> + [取消]」
+function EndpointRow({
+  end,
+  node,
+  options,
+  value,
+  editing,
+  onEdit,
+  onCancel,
+  onChange,
+}: {
+  end: 'source' | 'target';
+  node: PersonNode | undefined;
+  options: PersonNode[];
+  value: string;
+  editing: boolean;
+  onEdit: () => void;
+  onCancel: () => void;
+  onChange: (nodeId: string) => void;
+}) {
+  const isSource = end === 'source';
+  return (
+    <div className="flex items-center gap-2">
+      {editing ? (
+        <>
+          <select
+            autoFocus
+            aria-label={isSource ? tt('修改起点') : tt('修改终点')}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className="flex-1 min-w-0 px-2 py-1.5 border border-gray-300 rounded-md text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {options.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.data.name || tt('未命名')}
+                {n.data.relationship ? `（${n.data.relationship}）` : ''}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="shrink-0 px-2 py-1 rounded text-[11px] font-medium border border-gray-300 text-gray-600 hover:bg-gray-50"
+          >
+            {tt('取消')}
+          </button>
+        </>
+      ) : (
+        <>
+          <NodeCard node={node} />
+          <button
+            type="button"
+            onClick={onEdit}
+            aria-label={isSource ? tt('修改起点（即连线起始人物）') : tt('修改终点（即连线结束人物）')}
+            className="shrink-0 px-2 py-1 rounded text-[11px] font-medium border border-gray-300 text-gray-600 hover:bg-gray-50"
+          >
+            {tt('修改')}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function EdgeDetails() {
   useLang();
-  const {
-    nodes,
-    edges,
-    selectedEdgeId,
-    setSelectedEdgeId,
-    setSelectedNodeId,
-    updateEdgeType,
-    updateEdgeEndpoint,
-    swapEdgeDirection,
-    disconnectEdge,
-    reconnectEdge,
-    deleteEdge,
-    collapseEdge,
-    expandEdge,
-  } = useRelationshipStore();
+  // 按需订阅，避免全量订阅导致拖动画布时也重渲染本面板
+  const nodes = useRelationshipStore((s) => s.nodes);
+  const edges = useRelationshipStore((s) => s.edges);
+  const selectedEdgeId = useRelationshipStore((s) => s.selectedEdgeId);
+  const setSelectedEdgeId = useRelationshipStore((s) => s.setSelectedEdgeId);
+  const setSelectedNodeId = useRelationshipStore((s) => s.setSelectedNodeId);
+  const updateEdgeType = useRelationshipStore((s) => s.updateEdgeType);
+  const updateEdgeEndpoint = useRelationshipStore((s) => s.updateEdgeEndpoint);
+  const swapEdgeDirection = useRelationshipStore((s) => s.swapEdgeDirection);
+  const disconnectEdge = useRelationshipStore((s) => s.disconnectEdge);
+  const reconnectEdge = useRelationshipStore((s) => s.reconnectEdge);
+  const deleteEdge = useRelationshipStore((s) => s.deleteEdge);
+  const collapseEdge = useRelationshipStore((s) => s.collapseEdge);
+  const expandEdge = useRelationshipStore((s) => s.expandEdge);
 
-  // 本地编辑状态：当前正在编辑的端（source/target）
-  const [editingEnd, setEditingEnd] = useState<'source' | 'target' | null>(null);
   // 自定义关系称谓输入
   const [customLabelDraft, setCustomLabelDraft] = useState('');
+  // 当前正在「修改」的端点（source/target），点击修改后原地展开 select
+  const [editingEnd, setEditingEnd] = useState<'source' | 'target' | null>(null);
 
   const edge = useMemo(() => edges.find((e) => e.id === selectedEdgeId), [edges, selectedEdgeId]);
+
+  // 切换选中的关系时，重置端点「修改」展开状态
+  useEffect(() => {
+    setEditingEnd(null);
+  }, [selectedEdgeId]);
 
   if (!edge) {
     // 边已被删除或不选中：返回 null，由 App 切回默认面板
@@ -96,24 +164,22 @@ export function EdgeDetails() {
   const sourceNode = nodes.find((n) => n.id === edge.source);
   const targetNode = nodes.find((n) => n.id === edge.target);
 
-  // 关系类型的中文描述
-  const typeLabel = (t: string): string => {
-    if (t === 'parent-child') return tt('父子/母子');
-    if (t === 'spouse') return tt('爱人');
-    return tt('自定义');
-  };
-
   // 关系描述文字（基于 source -> target）
+  //  - 父子/母子：依据起点性别显示「父亲/母亲」；
+  //  - 爱人：xxx与xxx是爱人；
+  //  - 其他(自定义)：xxx与xxx是xxx关系。
   const relationshipText = (): string => {
     const sName = sourceNode?.data.name || '?';
     const tName = targetNode?.data.name || '?';
     if (edgeType === 'parent-child') {
-      return `${sName} ${tt('是')} ${tName} ${tt('的父母')}`;
+      const word = sourceNode?.data.gender === 'male' ? tt('父亲') : tt('母亲');
+      return `${sName}  ${tt('是')}  ${tName}  ${tt('的')} ${word}`;
     }
     if (edgeType === 'spouse') {
-      return `${sName} ${tt('与')} ${tName} ${tt('是爱人')}`;
+      return `${sName}  ${tt('与')}  ${tName}  ${tt('是爱人')}`;
     }
-    return `${sName} → ${tName}（${customLabel || tt('自定义关系')}）`;
+    const label = customLabel || tt('自定义关系');
+    return `${sName}${tt('与')}${tName}${tt('是')}${label}${tt('关系')}`;
   };
 
   const handleClose = () => {
@@ -128,19 +194,6 @@ export function EdgeDetails() {
       updateEdgeType(edge.id, newType);
       setCustomLabelDraft('');
     }
-  };
-
-  const handleCustomLabelCommit = () => {
-    if (edgeType === 'custom' && customLabelDraft.trim()) {
-      updateEdgeType(edge.id, 'custom', customLabelDraft.trim());
-      setCustomLabelDraft('');
-    }
-  };
-
-  const handleEndpointChange = (newNodeId: string) => {
-    if (!editingEnd) return;
-    updateEdgeEndpoint(edge.id, editingEnd, newNodeId);
-    setEditingEnd(null);
   };
 
   const handleSwap = () => {
@@ -169,8 +222,9 @@ export function EdgeDetails() {
     }
   };
 
-  // 候选节点列表（排除当前两端）
-  const candidateNodes = nodes.filter((n) => n.id !== edge.source && n.id !== edge.target);
+  // 端点候选列表：修改起点时排除终点，反之亦然（原地 select 使用）
+  const sourceOptions = nodes.filter((n) => n.id !== edge.target);
+  const targetOptions = nodes.filter((n) => n.id !== edge.source);
 
   return (
     <div
@@ -190,167 +244,92 @@ export function EdgeDetails() {
         </button>
       </div>
 
-      <div className="p-4 overflow-y-auto flex-1 space-y-4">
+      <div className="p-4 overflow-y-auto flex-1 space-y-2">
         <p className="text-xs text-gray-400">{tt('点击连接线后可在此修改两端、关系类型与方向。底部可断开/恢复或删除关系。')}</p>
 
-        {/* 连线两端 */}
-        <div>
-          <div className="text-xs font-medium text-gray-500 mb-2">{tt('连线两端')}</div>
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <NodeCard node={sourceNode} active={editingEnd === 'source'} />
-              <button
-                type="button"
-                onClick={() => setEditingEnd(editingEnd === 'source' ? null : 'source')}
-                aria-label={editingEnd === 'source' ? tt('取消修改起点（即连线起始人物）') : tt('修改起点（即连线起始人物）')}
-                className={clsx(
-                  'shrink-0 px-2 py-1 rounded text-[11px] font-medium border transition-colors',
-                  editingEnd === 'source'
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-blue-600 border-blue-300 hover:bg-blue-50'
-                )}
-              >
-                {editingEnd === 'source' ? tt('取消') : tt('改起点')}
-              </button>
-            </div>
+        {/* 起点端点行 */}
+        <EndpointRow
+          end="source"
+          node={sourceNode}
+          options={sourceOptions}
+          value={edge.source}
+          editing={editingEnd === 'source'}
+          onEdit={() => setEditingEnd('source')}
+          onCancel={() => setEditingEnd(null)}
+          onChange={(id) => {
+            updateEdgeEndpoint(edge.id, 'source', id);
+            setEditingEnd(null);
+          }}
+        />
 
-            {/* 中间关系指示 */}
-            <div className="flex items-center justify-center py-1">
-              <div className="flex flex-col items-center gap-1">
-                <div className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 px-2.5 py-1 rounded-full border border-gray-200">
-                  <span className="font-medium">{typeLabel(edgeType)}</span>
-                  {isDisconnected && (
-                    <span className="text-[10px] text-orange-500 bg-orange-50 px-1.5 py-0.5 rounded">{tt('已断开')}</span>
-                  )}
-                </div>
-                <ArrowRight className="w-4 h-4 text-gray-400" aria-hidden="true" />
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <NodeCard node={targetNode} active={editingEnd === 'target'} />
-              <button
-                type="button"
-                onClick={() => setEditingEnd(editingEnd === 'target' ? null : 'target')}
-                aria-label={editingEnd === 'target' ? tt('取消修改终点（即连线结束人物）') : tt('修改终点（即连线结束人物）')}
-                className={clsx(
-                  'shrink-0 px-2 py-1 rounded text-[11px] font-medium border transition-colors',
-                  editingEnd === 'target'
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-blue-600 border-blue-300 hover:bg-blue-50'
-                )}
-              >
-                {editingEnd === 'target' ? tt('取消') : tt('改终点')}
-              </button>
-            </div>
-          </div>
-
-          {/* 端点选择器：一次只能改一端 */}
-          {editingEnd && (
-            <div className="mt-3 p-2.5 bg-blue-50/50 border border-blue-100 rounded-md">
-              <div className="text-[11px] text-blue-700 mb-1.5">{tt('选择新的')}{editingEnd === 'source' ? tt('起点') : tt('终点')}{tt('（一次只能修改一端）')}
-              </div>
-              <select
-                aria-label={`${tt('选择新的')}${editingEnd === 'source' ? tt('起点') : tt('终点')}${tt('人物')}`}
-                value=""
-                onChange={(e) => {
-                  if (e.target.value) handleEndpointChange(e.target.value);
-                }}
-                className="w-full px-2 py-1.5 border border-blue-300 rounded text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">{tt('-- 选择节点 --')}</option>
-                {candidateNodes.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.data.name || tt('未命名')}
-                    {n.data.relationship ? `（${n.data.relationship}）` : ''}
-                  </option>
-                ))}
-              </select>
-              {candidateNodes.length === 0 && (
-                <div className="text-[10px] text-gray-400 mt-1">{tt('没有可选的其他节点。')}</div>
-              )}
-            </div>
-          )}
-
-          {/* 关系描述 */}
-          <div className="mt-2 text-[11px] text-gray-500 bg-gray-50 px-2.5 py-1.5 rounded">
-            {relationshipText()}
-          </div>
-        </div>
-
-        {/* 关系类型 */}
-        <div>
-          <div className="text-xs font-medium text-gray-500 mb-2">{tt('关系类型')}</div>
-          <div className="grid grid-cols-3 gap-1.5">
-            {(['parent-child', 'spouse', 'custom'] as const).map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => handleTypeChange(t)}
-                aria-label={`${tt('关系类型：')}${typeLabel(t)}`}
-                aria-pressed={edgeType === t}
-                className={clsx(
-                  'px-2 py-1.5 rounded-md text-xs font-medium border transition-colors',
-                  edgeType === t
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                )}
-              >
-                {typeLabel(t)}
-              </button>
-            ))}
-          </div>
+        {/* 关系类型选择：选中「自定义」时同行紧跟输入框（<select>其他</select><input>） */}
+        <div className="flex items-center justify-center gap-2">
+          <select
+            aria-label={tt('关系类型')}
+            value={edgeType}
+            onChange={(e) => handleTypeChange(e.target.value as 'parent-child' | 'spouse' | 'custom')}
+            className="shrink-0 px-2 py-1.5 border border-gray-300 rounded-md text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="parent-child">{tt('父子/母子')}</option>
+            <option value="spouse">{tt('爱人')}</option>
+            <option value="custom">{tt('自定义')}</option>
+          </select>
           {edgeType === 'custom' && (
-            <div className="mt-2 flex gap-1.5">
-              <input
-                type="text"
-                value={customLabelDraft}
-                onChange={(e) => setCustomLabelDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCustomLabelCommit();
-                }}
-                placeholder={customLabel ? `${tt('当前：')}${customLabel}` : tt('如：同学、同事、朋友')}
-                className="flex-1 min-w-0 px-2.5 py-1.5 border border-gray-300 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <button
-                type="button"
-                onClick={handleCustomLabelCommit}
-                disabled={!customLabelDraft.trim()}
-                aria-label={tt('保存自定义关系称谓')}
-                className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-              >{tt('保存')}</button>
-            </div>
-          )}
-          {edgeType === 'parent-child' && (
-            <div className="text-[10px] text-gray-400 mt-1.5">
-              {tt('起点是父母，终点是子女。如需反转请使用下方"反转方向"。')}
-            </div>
+            <input
+              type="text"
+              value={customLabelDraft}
+              onChange={(e) => {
+                setCustomLabelDraft(e.target.value);
+                const v = e.target.value.trim();
+                if (v) updateEdgeType(edge.id, 'custom', v);
+              }}
+              placeholder={customLabel ? `${tt('当前：')}${customLabel}` : tt('如：同学、同事、朋友')}
+              className="flex-1 min-w-0 px-2.5 py-1.5 border border-gray-300 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
           )}
         </div>
 
-        {/* 方向 */}
-        <div>
-          <div className="text-xs font-medium text-gray-500 mb-2">{tt('方向')}</div>
-          <div className="flex items-center justify-between p-2.5 bg-gray-50 rounded-md border border-gray-100">
-            <div className="text-[11px] text-gray-600 min-w-0">
-              <div className="truncate">
-                <span className="font-medium text-gray-800">{sourceNode?.data.name || '?'}</span>
-                <span className="mx-1 text-gray-400">→</span>
-                <span className="font-medium text-gray-800">{targetNode?.data.name || '?'}</span>
-              </div>
-              <div className="text-[10px] text-gray-400 mt-0.5">
-                {edgeType === 'parent-child' ? tt('起点为父母，终点为子女') : edgeType === 'spouse' ? tt('爱人关系（双向）') : tt('自定义方向')}
-              </div>
-            </div>
+        {/* 方向箭头：爱人=双向（不可点击），其他=单向（点击反转） */}
+        <div className="flex items-center justify-center">
+          {edgeType === 'spouse' ? (
+            <span
+              className="text-gray-300"
+              aria-label={tt('爱人关系（双向）')}
+              title={tt('爱人关系（双向）')}
+            >
+              <ArrowLeftRight className="w-5 h-5" aria-hidden="true" />
+            </span>
+          ) : (
             <button
               type="button"
               onClick={handleSwap}
-              aria-label={tt('反转方向：交换起点与终点（如父子改为子父）')}
-              className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-100 transition-colors"
-              title={tt('交换起点与终点（如父子改为子父）')}
+              aria-label={tt('反转方向')}
+              title={tt('方向（点击箭头可反转方向）')}
+              className="rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
             >
-              <ArrowLeftRight className="w-3.5 h-3.5" aria-hidden="true" />{tt('反转')}</button>
-          </div>
+              <ArrowRight className="w-5 h-5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+
+        {/* 终点端点行 */}
+        <EndpointRow
+          end="target"
+          node={targetNode}
+          options={targetOptions}
+          value={edge.target}
+          editing={editingEnd === 'target'}
+          onEdit={() => setEditingEnd('target')}
+          onCancel={() => setEditingEnd(null)}
+          onChange={(id) => {
+            updateEdgeEndpoint(edge.id, 'target', id);
+            setEditingEnd(null);
+          }}
+        />
+
+        {/* 关系描述 */}
+        <div className="text-[11px] text-gray-500 bg-gray-50 px-0.5 py-1.5 rounded">
+          {relationshipText()}
         </div>
       </div>
 

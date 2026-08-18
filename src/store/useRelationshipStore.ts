@@ -216,8 +216,8 @@ export function buildNodeAriaLabelVisible(
   id: string,
   data: PersonData,
   displaySettings: DisplaySettings,
-  nodes: PersonNode[],
-  edges: Edge[],
+  nodes?: PersonNode[],
+  edges?: Edge[],
   hiddenNodeIds?: Set<string>
 ): string {
   const lang = useRelationshipStore.getState().language;
@@ -335,13 +335,15 @@ export function buildNodeAriaLabelVisible(
   // 直接关联的人（与卡片显示一致：父母/子女/爱人/其他）
   // 注意：被隐藏（含间接隐藏）的人物不再朗读，避免读出不可见对象。
   const related: { role: string; names: string[] }[] = [];
-  const nameById = new Map(nodes.map((n) => [n.id, n.data?.name]));
+  // 优先使用带引用缓存的全局 Map，避免每节点重复重建整张 Map（O(V²) → O(V)）
+  const nameById = nodes ? new Map(nodes.map((n) => [n.id, n.data?.name])) : getNodeNameMap();
+  const edgeList = edges ?? useRelationshipStore.getState().edges;
   const isVisiblePerson = (nid: string): boolean => !hiddenNodeIds || !hiddenNodeIds.has(nid);
   const parents: string[] = [];
   const children: string[] = [];
   const spouses: string[] = [];
   const others: string[] = [];
-  for (const e of edges) {
+  for (const e of edgeList) {
     if (e.source !== id && e.target !== id) continue;
     const t = (e.data as EdgeData | undefined)?.type;
     if (t === 'parent-child') {
@@ -391,12 +393,18 @@ const QR_VISIBLE_FIELDS = new Set<string>([
  */
 export function buildEdgeAriaLabel(
   edge: Edge,
-  nodes: PersonNode[]
+  nodes?: PersonNode[]
 ): string {
   const lang = useRelationshipStore.getState().language;
   const A = (zh: string, en: string) => (lang === 'en' ? en : zh);
-  const nameById = new Map(nodes.map((n) => [n.id, n.data?.name || A('未命名', 'unnamed')]));
-  const genderById = new Map(nodes.map((n) => [n.id, (n.data as { gender?: string })?.gender]));
+  // 优先使用带引用缓存的全局 Map（避免每条边都重建一遍整张 Map）；
+  // 若调用方显式传入了 nodes（旧路径）则回退为该次局部构建，行为保持一致。
+  const nameById = nodes
+    ? new Map(nodes.map((n) => [n.id, n.data?.name || A('未命名', 'unnamed')]))
+    : getNodeNameMap();
+  const genderById = nodes
+    ? new Map(nodes.map((n) => [n.id, (n.data as { gender?: string })?.gender]))
+    : getNodeGenderMap();
   const sourceName = nameById.get(edge.source) || A('未命名', 'unnamed');
   const targetName = nameById.get(edge.target) || A('未命名', 'unnamed');
   const sourceGender = genderById.get(edge.source);
@@ -2224,11 +2232,52 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   };
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// 轻量、带引用缓存的辅助查询（供节点/边组件按需「非订阅」读取）
+//
+// 性能说明：PersonNode 与边组件在计算 aria-label / 关系统计时原本会订阅整个
+// nodes / edges 数组，导致任意节点拖动都触发所有节点与所有边重渲染。这里改为
+// 组件仅在「自身被 React Flow 重渲染」时，通过 getState() 一次性读取以下带缓存
+// 的 Map。缓存基于 nodes 数组引用，仅在 nodes 真正变化时才重建，避免每条边都
+// 重建一遍 Map 的 O(edges × nodes) 浪费。
+// ───────────────────────────────────────────────────────────────────────────
+let _cachedNodesRef: Node<PersonData, string>[] | null = null;
+let _cachedNameById: Map<string, string> | null = null;
+let _cachedGenderById: Map<string, string> | null = null;
+
+export function getNodeNameMap(): Map<string, string> {
+  const nodes = useRelationshipStore.getState().nodes;
+  if (_cachedNodesRef !== nodes) {
+    _cachedNodesRef = nodes;
+    _cachedNameById = new Map(nodes.map((n) => [n.id, (n.data as PersonData).name || '']));
+    _cachedGenderById = new Map(nodes.map((n) => [n.id, (n.data as PersonData).gender || '']));
+  }
+  return _cachedNameById!;
+}
+
+export function getNodeGenderMap(): Map<string, string> {
+  // 确保与 name 缓存同步刷新
+  getNodeNameMap();
+  return _cachedGenderById!;
+}
+
 // 浏览器持久化：监听 nodes/edges/displaySettings/viewport 变化，自动保存
 // （仅当 displaySettings.persistToBrowser 开启时）
-useRelationshipStore.subscribe((state) => {
+//
+// 性能优化：拖拽节点时 onNodesChange 会以很高频触发本订阅，若每次都 JSON.stringify
+// 整个 nodes+edges 并同步写入 localStorage，会造成明显卡顿。这里用「微任务/rAF 合并 +
+// 节流」策略：
+//  - 收集最新 state，最多每 PERSIST_INTERVAL 毫秒执行一次真正的写入；
+//  - 若处于拖拽中（dragging），则推迟到拖拽结束后再落盘，避免拖动过程中的高频写盘；
+//  - 非拖拽的常规变更（增删改、设置切换等）仍会在下一个 rAF 合并后尽快落盘。
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let persistRaf: number | null = null;
+let persistPending: ReturnType<typeof useRelationshipStore.getState> | null = null;
+const PERSIST_INTERVAL = 500;
+
+function schedulePersist(state: ReturnType<typeof useRelationshipStore.getState>) {
+  // 关闭了浏览器保存：清除已保存的数据，刷新后会加载示例数据
   if (!state.displaySettings.persistToBrowser) {
-    // 关闭了浏览器保存：清除已保存的数据，刷新后会加载示例数据
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch (e) {
@@ -2236,6 +2285,30 @@ useRelationshipStore.subscribe((state) => {
     }
     return;
   }
+  persistPending = state;
+  // 拖拽进行中：延迟落盘，待拖拽停止后由下一次状态变化或超时触发
+  const isDragging = state.nodes.some((n) => n.dragging);
+  if (isDragging) return;
+  if (persistTimer) return; // 已安排节流写入
+  persistTimer = setTimeout(flushPersist, PERSIST_INTERVAL);
+  // 用 rAF 把「同步写盘」延后到浏览器空闲，避免阻塞当前帧渲染
+  if (persistRaf === null) {
+    persistRaf = requestAnimationFrame(() => {
+      persistRaf = null;
+    });
+  }
+}
+
+function flushPersist() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  const state = persistPending;
+  persistPending = null;
+  if (!state) return;
+  // 再次确认：若此时仍在拖拽，推迟到拖拽结束
+  if (state.nodes.some((n) => n.dragging)) return;
   savePersistedState({
     nodes: state.nodes,
     edges: state.edges,
@@ -2244,7 +2317,21 @@ useRelationshipStore.subscribe((state) => {
     hiddenNodeIds: Array.from(state.hiddenNodeIds),
     focusNodeId: state.focusNodeId,
   });
+}
+
+useRelationshipStore.subscribe((state) => {
+  schedulePersist(state);
 });
+
+// 页面隐藏/卸载前确保最后一次变更落盘（拖拽中可能被推迟，这里强制写入）
+if (typeof window !== 'undefined') {
+  const flushOnExit = () => flushPersist();
+  window.addEventListener('beforeunload', flushOnExit);
+  window.addEventListener('pagehide', flushOnExit);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPersist();
+  });
+}
 
 // 初始化：同步 <html lang> 与 URL，并确保初始称谓匹配当前语言
 (function initLanguage() {

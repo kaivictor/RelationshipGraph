@@ -10,14 +10,26 @@ import {
   useViewport,
   useStore,
   useStoreApi,
+  type Node,
+  type Edge,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { useShallow } from 'zustand/react/shallow';
 import { useRelationshipStore, computeInvisibleNodes, computeCoordinateLines, buildNodeAriaLabelVisible, buildEdgeAriaLabel } from '../store/useRelationshipStore';
 import { PersonNodeComponent } from './PersonNode';
 import SpouseEdge from './SpouseEdge';
 import ParentChildEdge from './ParentChildEdge';
 import CustomEdge from './CustomEdge';
 import { toPng, toSvg } from 'html-to-image';
+
+// 比较两个 Set<string> 是否含有相同元素（用于拖动期间复用不可见集合引用）
+function setEquals(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) {
+    if (!b.has(v)) return false;
+  }
+  return true;
+}
 import { Download, Upload, Image as ImageIcon, ChevronDown, Undo2, HelpCircle, Spline, X, Plus, Minus, Maximize, Lock, Unlock } from 'lucide-react';
 import { parseXlsxFile } from '../utils/xlsxTemplate';
 import { exportFile, exportImageFile } from '../utils/nativeExport';
@@ -36,6 +48,9 @@ const edgeTypes = {
 
 export default function Relationship() {
   useLang();
+  // 性能优化：原先使用 useRelationshipStore()（无 selector）会订阅整个 store，
+  // 导致 viewport / decryptPassword / isDecrypted 等任何状态变化都引发整个画布组件重渲染。
+  // 改用 useShallow 精确选取所需字段：仅当这些字段引用变化时才重渲染。
   const {
     nodes,
     edges,
@@ -59,7 +74,32 @@ export default function Relationship() {
     resetConnectSelection,
     setShowHelpPage,
     setEdgeMenu,
-  } = useRelationshipStore();
+  } = useRelationshipStore(
+    useShallow((s) => ({
+      nodes: s.nodes,
+      edges: s.edges,
+      selectedNodeId: s.selectedNodeId,
+      onNodesChange: s.onNodesChange,
+      onEdgesChange: s.onEdgesChange,
+      onConnect: s.onConnect,
+      setSelectedNodeId: s.setSelectedNodeId,
+      setSelectedEdgeId: s.setSelectedEdgeId,
+      toggleNodeSelected: s.toggleNodeSelected,
+      applyMultiSelect: s.applyMultiSelect,
+      layoutGraph: s.layoutGraph,
+      exportData: s.exportData,
+      importData: s.importData,
+      importPersonsIncremental: s.importPersonsIncremental,
+      connectionMode: s.connectionMode,
+      connectionCustomLabel: s.connectionCustomLabel,
+      connectFirstNodeId: s.connectFirstNodeId,
+      setConnectionMode: s.setConnectionMode,
+      clickNodeInConnectMode: s.clickNodeInConnectMode,
+      resetConnectSelection: s.resetConnectSelection,
+      setShowHelpPage: s.setShowHelpPage,
+      setEdgeMenu: s.setEdgeMenu,
+    }))
+  );
 
   const showCanvasHint = useRelationshipStore((s) => s.displaySettings.showCanvasHint);
   const showCoordinateSystem = useRelationshipStore((s) => s.displaySettings.showCoordinateSystem);
@@ -76,9 +116,21 @@ export default function Relationship() {
   );
 
   // 不可见集合 = 隐藏边（桥语义）+ 隐藏节点（割点语义）共同作用下，从"自己"不可达的节点
+  // 性能优化：拖动节点时 nodes 引用每帧变化，但「不可见集合」只由拓扑（edges）与
+  // hiddenNodeIds 决定，与节点坐标无关。因此这里复用上一次的 Set 引用（内容相等时），
+  // 从而让下方 visibleNodes / visibleEdges 在拖动期保持同一数组引用——React Flow 内部对
+  // 节点对象做浅比较，坐标未变（或仅被拖节点变化）的节点不会被重复重渲染。
+  // 用 ref 保存上一次不可见集合，避免无关变化（如单纯拖动）导致的下游重计算/重渲染
+  const prevInvisibleRef = useRef<Set<string> | null>(null);
   const invisibleNodeIds = useMemo(() => {
     const invisible = computeInvisibleNodes(nodes, edges, hiddenNodeIds);
-    return invisible.size > 0 ? invisible : null;
+    if (invisible.size === 0) return null;
+    // 与上次结果比较，相等则复用旧引用
+    if (prevInvisibleRef.current && setEquals(prevInvisibleRef.current, invisible)) {
+      return prevInvisibleRef.current;
+    }
+    prevInvisibleRef.current = invisible;
+    return invisible;
   }, [nodes, edges, hiddenNodeIds]);
 
   // 过滤被隐藏/隐藏的节点和边；已隐藏的边线也不可见
@@ -93,26 +145,61 @@ export default function Relationship() {
 
   // 屏幕阅读器标签：为连线生成「两端姓名 + 关系 + 方向」的中文描述，
   // 覆盖 React Flow 默认的英文 "Edge from X to Y"。
-  const visibleEdgesWithAria = useMemo(
-    () =>
-      visibleEdges.map((e) => ({
-        ...e,
-        ariaLabel: buildEdgeAriaLabel(e, nodes),
-      })),
-    [visibleEdges, nodes]
-  );
+  // 性能优化：边在拖动期间引用不变（edges 不变），这里用引用复用：若某条边的
+  // id/source/target/data 与上一次完全一致，直接复用上一帧已带 ariaLabel 的对象，
+  // 避免每帧 spread 出全新对象导致所有连线重渲染；名字/性别查表走带引用缓存的全局 Map。
+  const prevAriaEdgesRef = useRef<Map<string, Edge> | null>(null);
+  const visibleEdgesWithAria = useMemo(() => {
+    const prev = prevAriaEdgesRef.current;
+    const next = visibleEdges.map((e) => {
+      const p = prev?.get(e.id);
+      if (p && p.source === e.source && p.target === e.target && p.data === e.data) {
+        return p; // 完全复用（含 ariaLabel），不重渲染该连线
+      }
+      return { ...e, ariaLabel: buildEdgeAriaLabel(e) };
+    });
+    prevAriaEdgesRef.current = new Map(next.map((e) => [e.id, e]));
+    return next;
+  }, [visibleEdges]);
 
   // 屏幕阅读器标签：依据「显示开关 + 连线」上下文生成，做到「显示的讲、隐藏的不讲」，并介绍直接关联的人。
   // 同时保留 normalizeNodeData 注入的 ariaRole/domAttributes（覆盖英文 "node" 角色描述）。
   // 关联人中也排除被隐藏（含间接隐藏）的人物，避免读出不可见对象。
-  const visibleNodesWithAria = useMemo(
-    () =>
-      visibleNodes.map((n) => ({
+  // 性能优化（关键，解决原本 O(V·E) 全量重算卡顿）：
+  //   1) 名字/性别查表走带引用缓存的全局 Map（getNodeNameMap / getNodeGenderMap，O(V) 一次构建）。
+  //   2) 引用复用：拖动期间只有被拖节点的 position 变化，其余节点的 id/data 引用不变，
+  //      因此完全复用上一帧已带 ariaLabel 的节点对象（不重渲染、不重算）；
+  //      仅被拖节点用新的 position + 上一帧算好的 ariaLabel（其 data 没变，aria 不变）。
+  //      这样把每帧重算成本从「所有节点各遍历全部边 = O(V·E)」降到「仅被拖节点 O(E)」。
+  //   3) 仅在真正影响内容的输入（节点集合 / data / displaySettings / 不可见集合）变化时，才全量重算。
+  const prevAriaNodesRef = useRef<Map<string, Node<PersonData, string>> | null>(null);
+  const visibleNodesWithAria = useMemo(() => {
+    const prev = prevAriaNodesRef.current;
+    const next = visibleNodes.map((n) => {
+      const p = prev?.get(n.id);
+      const dataSame = !!p && p.data === n.data;
+      const posSame =
+        !!p &&
+        p.position?.x === n.position?.x &&
+        p.position?.y === n.position?.y;
+      if (dataSame && posSame) {
+        return p; // 完全复用（含 ariaLabel），不重渲染该节点
+      }
+      if (dataSame && p) {
+        // 仅位置变化（被拖动）：复用上一帧已算好的 ariaLabel，仅更新 position
+        return { ...n, ariaLabel: (p as Node<PersonData, string> & { ariaLabel?: string }).ariaLabel };
+      }
+      // 数据/显示/隐藏变化，或首次：完整计算 aria
+      return {
         ...n,
-        ariaLabel: buildNodeAriaLabelVisible(n.id, n.data, displaySettings, nodes, edges, invisibleNodeIds),
-      })),
-    [visibleNodes, displaySettings, nodes, edges, invisibleNodeIds]
-  );
+        ariaLabel: buildNodeAriaLabelVisible(n.id, n.data, displaySettings, undefined, undefined, invisibleNodeIds),
+      };
+    });
+    prevAriaNodesRef.current = new Map(next.map((n) => [n.id, n]));
+    return next;
+  }, [visibleNodes, displaySettings, invisibleNodeIds]);
+
+
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const reactFlow = useReactFlow();
@@ -152,7 +239,9 @@ export default function Relationship() {
   const longPressTriggeredRef = useRef(false);
   const longPressSavedIdsRef = useRef<string[]>([]);
 
-  const { viewport: savedViewport, setViewport } = useRelationshipStore();
+  const { viewport: savedViewport, setViewport } = useRelationshipStore(
+    useShallow((s) => ({ viewport: s.viewport, setViewport: s.setViewport }))
+  );
   const undo = useRelationshipStore((s) => s.undo);
   const undoStack = useRelationshipStore((s) => s.undoStack);
   const lastUndoLabel = undoStack.length > 0 ? undoStack[undoStack.length - 1].label : '';
@@ -931,7 +1020,7 @@ export default function Relationship() {
         <div className="export-hide absolute top-4 left-4 bg-white/80 backdrop-blur-sm px-4 py-3 rounded-lg border border-gray-200 shadow-sm text-sm text-gray-600 pointer-events-none z-10" aria-hidden="true">
           {isCanvasLocked
             ? tt('画布已锁定：用方向键选择旁边的人物，Ctrl/Cmd+L 解锁，Ctrl/Cmd+↑/↓ 缩放')
-            : tt('点击节点查看详情并添加亲属')}
+            : tt('点击节点查看详情并添加角色')}
         </div>
       )}
 

@@ -128,7 +128,7 @@ export function HelpPage() {
               <li><b className="text-gray-800">{tt('多选节点：')}</b>{tt('长按一个节点约 0.5 秒即可切换其选中状态，配合逐个长按可同时选中多人。')}</li>
               <li><b className="text-gray-800">{tt('取消选择：')}</b>{tt('点击画布空白处关闭详情面板。')}</li>
               <li><b className="text-gray-800">{tt('小地图：')}</b>{tt('右下角小地图可快速跳转与预览整体结构。')}</li>
-              <li><b className="text-gray-800">{tt('整理布局：')}</b>{tt('工具栏「整理布局」一键按树状结构自动排列所有节点。')}</li>
+              <li><b className="text-gray-800">{tt('整理布局：')}</b>{tt('工具栏「整理布局」一键按树状结构自动排列所有节点。（不推荐使用，建议先备份数据）')}</li>
             </ul>
           </section>
 
@@ -141,7 +141,7 @@ export function HelpPage() {
               <li><b className="text-gray-800">{tt('社交账号：')}</b>{tt('哔哩哔哩、抖音、小红书、推特、WhatsApp、Discord、Reddit、Threads。')}</li>
               <li><b className="text-gray-800">{tt('自定义属性：')}</b>{tt('可自由添加任意键值对（如：职业、爱好、备注）。')}</li>
               <li><b className="text-gray-800">{tt('头像：')}</b>{tt('点击头像区域上传图片，自动压缩后保存。')}</li>
-              <li><b className="text-gray-800">{tt('二维码：')}</b>{tt('联系方式（手机 / QQ / 微信等）可一键生成二维码，方便快速添加好友。')}</li>
+              <li><b className="text-gray-800">{tt('二维码：')}</b>{tt('联系方式（手机 / 邮件）可一键生成二维码，方便快速开展沟通。')}</li>
               <li><b className="text-gray-800">{tt('字段显示：')}</b>{tt('在「显示设置」中可开关、排序节点卡片上显示的字段。')}</li>
             </ul>
             <GifDemo src="/help/person-edit.gif" alt={tt('人物编辑演示')} />

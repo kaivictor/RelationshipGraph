@@ -1,5 +1,5 @@
 import { BaseEdge, EdgeLabelRenderer, EdgeProps } from '@xyflow/react';
-import { useRelationshipStore, buildEdgeAriaLabel } from '../store/useRelationshipStore';
+import { useRelationshipStore, buildEdgeAriaLabel, getNodeGenderMap } from '../store/useRelationshipStore';
 import { useLang } from '../i18n';
 
 export default function ParentChildEdge({
@@ -16,19 +16,19 @@ export default function ParentChildEdge({
 }: EdgeProps) {
   const disconnected = (data as { disconnected?: boolean })?.disconnected;
   const showEdgeRelationship = useRelationshipStore((s) => s.displaySettings.showEdgeRelationship);
-  const nodes = useRelationshipStore((s) => s.nodes);
   const isEn = useLang() === 'en'; // 订阅语言变化，切换时重新渲染连线字符
+  // 不再订阅整个 nodes 数组；性别按需（带缓存）读取，避免拖动任意节点时所有边重渲染
+  const genderById = getNodeGenderMap();
   const ariaText = buildEdgeAriaLabel(
-    { id, source, target, data } as Parameters<typeof buildEdgeAriaLabel>[0],
-    nodes
+    { id, source, target, data } as Parameters<typeof buildEdgeAriaLabel>[0]
   );
 
   // 查找父子两端节点的性别：source=父母，target=子女
-  const parentNode = nodes.find((n) => n.id === source);
-  const childNode = nodes.find((n) => n.id === target);
+  const sourceGender = genderById.get(source);
+  const targetGender = genderById.get(target);
   // source端字符（父母），target端字符（子女）
-  const sourceChar = parentNode?.data.gender === 'female' ? (isEn ? 'Mo' : '母') : (isEn ? 'Fa' : '父');
-  const targetChar = childNode?.data.gender === 'female' ? (isEn ? 'Da' : '女') : (isEn ? 'So' : '子');
+  const sourceChar = sourceGender === 'female' ? (isEn ? 'Mo' : '母') : (isEn ? 'Fa' : '父');
+  const targetChar = targetGender === 'female' ? (isEn ? 'Da' : '女') : (isEn ? 'So' : '子');
 
   // 几何方向
   const dx = targetX - sourceX;
