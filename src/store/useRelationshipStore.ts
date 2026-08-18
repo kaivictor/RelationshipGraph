@@ -11,7 +11,7 @@ import {
 } from '@xyflow/react';
 import { v4 as uuidv4 } from 'uuid';
 import dagre from 'dagre';
-import { calculateRelationships } from '../utils/relationship';
+import { calculateRelationships, type Lang } from '../utils/relationship';
 import {
   exportToJSON,
   exportToXML,
@@ -20,6 +20,39 @@ import {
   importFromXML,
   type ExportData,
 } from '../utils/dataSerializer';
+import { type Language } from '../i18n';
+
+// 从 URL 参数 ?lang=zh|en 读取初始语言；缺省时读取浏览器偏好
+export function getInitialLanguage(): Language {
+  if (typeof window !== 'undefined') {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const langParam = params.get('lang');
+      if (langParam === 'en' || langParam === 'zh') return langParam;
+    } catch {
+      /* ignore */
+    }
+    const navLang = window.navigator?.language?.toLowerCase() || '';
+    if (navLang.startsWith('zh')) return 'zh';
+    if (navLang.startsWith('en')) return 'en';
+  }
+  return 'zh';
+}
+
+// 同步语言到 URL（仅更新 ?lang 参数，不刷新页面）与 <html lang>
+export function syncLanguageToUrl(lang: Language) {
+  if (typeof window === 'undefined') return;
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('lang') !== lang) {
+      url.searchParams.set('lang', lang);
+      window.history.replaceState({}, '', url.toString());
+    }
+  } catch {
+    /* ignore */
+  }
+  document.documentElement.lang = lang === 'en' ? 'en' : 'zh';
+}
 
 // 格式分发：导出
 function exportToFormat(data: ExportData, format: 'json' | 'xml' | 'csv'): string {
@@ -70,6 +103,8 @@ export type PersonData = {
   deathReason?: string;
   deathDate?: string; // 格式 YYYY-MM-DD 或 YYYY-MM 或空
   relationshipOverridden?: boolean;
+  // 用户是否手动垂直拖动过该节点：true 时布局重算会保留其 Y
+  yOverridden?: boolean;
 };
 
 // 多值字段名集合
@@ -95,6 +130,305 @@ export function firstValue(v: unknown): string {
 }
 
 export type PersonNode = Node<PersonData>;
+
+// 内置字段中文标签（与 PersonNode 中定义保持一致）
+const BUILTIN_LABELS: Record<string, string> = {
+  phone: '手机号',
+  qq: 'QQ号',
+  wechat: '微信号',
+  email: '邮箱号',
+  address: '住址',
+  licensePlate: '车牌号',
+  bilibili: '哔哩哔哩',
+  discord: 'Discord',
+  reddit: 'Reddit',
+  threads: 'Threads',
+  whatsapp: 'WhatsApp',
+  douyin: '抖音',
+  twitter: '推特',
+  xiaohongshu: '小红书',
+};
+
+// 英文字段标签（用于英文朗读/界面）
+const BUILTIN_LABELS_EN: Record<string, string> = {
+  phone: 'Phone',
+  qq: 'QQ',
+  wechat: 'WeChat',
+  email: 'Email',
+  address: 'Address',
+  licensePlate: 'License plate',
+  bilibili: 'Bilibili',
+  discord: 'Discord',
+  reddit: 'Reddit',
+  threads: 'Threads',
+  whatsapp: 'WhatsApp',
+  douyin: 'Douyin',
+  twitter: 'Twitter',
+  xiaohongshu: 'Xiaohongshu',
+};
+
+function formatBirthDate(birthDate: string, lang: string): string {
+  if (!birthDate) return '';
+  const parts = birthDate.split('-');
+  if (parts.length < 2) return birthDate;
+  if (lang === 'en') return `${parts[0]}-${parts[1]}`;
+  return `${parts[0]}年${parts[1]}月`;
+}
+
+function formatDeathDate(deathDate: string, lang: string): string {
+  if (!deathDate) return '';
+  const parts = deathDate.split('-');
+  if (lang === 'en') {
+    if (parts.length >= 3) return `${parts[0]}-${parts[1]}-${parts[2]}`;
+    if (parts.length === 2) return `${parts[0]}-${parts[1]}`;
+    return deathDate;
+  }
+  if (parts.length >= 3) return `${parts[0]}年${parts[1]}月${parts[2]}日`;
+  if (parts.length === 2) return `${parts[0]}年${parts[1]}月`;
+  return deathDate;
+}
+
+function calculateAge(birthDate: string, deathDate?: string): number | null {
+  if (!birthDate) return null;
+  const parts = birthDate.split('-');
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10);
+  if (isNaN(year) || isNaN(month)) return null;
+  const ref = deathDate ? new Date(deathDate) : new Date();
+  if (isNaN(ref.getTime())) return null;
+  let age = ref.getFullYear() - year;
+  const refMonth = ref.getMonth() + 1;
+  if (refMonth < month) {
+    age--;
+  } else if (refMonth === month) {
+    const day = parts[2] ? parseInt(parts[2], 10) : 1;
+    if (ref.getDate() < day) age--;
+  }
+  return age;
+}
+
+/**
+ * 为屏幕阅读器生成「所见即所读」的节点描述。
+ * 仅描述当前显示开关下可见的字段，并简要介绍与此人有直接关联的人。
+ * 该函数在渲染层（持有 displaySettings 与 edges 上下文）调用，确保与卡片显示一致。
+ */
+export function buildNodeAriaLabelVisible(
+  id: string,
+  data: PersonData,
+  displaySettings: DisplaySettings,
+  nodes: PersonNode[],
+  edges: Edge[],
+  hiddenNodeIds?: Set<string>
+): string {
+  const lang = useRelationshipStore.getState().language;
+  const A = (zh: string, en: string) => (lang === 'en' ? en : zh);
+  const join = lang === 'en' ? ', ' : '、';
+  const parts: string[] = [];
+
+  // 姓名 + 性别
+  const genderText =
+    data.gender === 'male' ? A('男', 'male') : data.gender === 'female' ? A('女', 'female') : A('性别未知', 'unknown gender');
+  const namePrefix = data.isSelf ? A('本人', 'self') : '';
+  const namePart = `${data.name || A('未命名', 'unnamed')}${namePrefix ? `（${namePrefix}）` : ''}`;
+  parts.push(`${namePart}，${A('性别', 'gender')}${genderText}`);
+
+  // 个人级字段可见性覆盖（与 PersonNode 逻辑一致）
+  const isBasicVisible = (key: string, globalVisible: boolean): boolean => {
+    if (data.fieldVisibility && key in data.fieldVisibility) return data.fieldVisibility[key];
+    return globalVisible;
+  };
+
+  // 称谓
+  if (isBasicVisible('relationship', displaySettings.showRelationship) && data.relationship) {
+    parts.push(`${A('称谓', 'kin term')}：${data.relationship}`);
+  }
+  // 俗称
+  const popNames = toArrayValue(data.popularName) || [];
+  if (isBasicVisible('popularName', displaySettings.showPopularName) && popNames.length > 0) {
+    parts.push(`${A('俗称', 'colloquial name')}：${popNames.join(join)}`);
+  }
+  // 曾用名
+  const formerNames = toArrayValue(data.formerName) || [];
+  if (isBasicVisible('formerName', displaySettings.showFormerName) && formerNames.length > 0) {
+    parts.push(`${A('曾用名', 'former name')}：${formerNames.join(join)}`);
+  }
+  // 出生/离世信息行（与卡片 infoLine 一致）
+  if (isBasicVisible('birthDate', true)) {
+    const age = displaySettings.showAge ? calculateAge(data.birthDate, data.deathDate) : null;
+    const showAgeNum = age !== null && age >= 0;
+    const birthStr = displaySettings.showBirthDate && data.birthDate ? formatBirthDate(data.birthDate, lang) : '';
+    const useDeathReplace = data.deceased && data.deathDate && displaySettings.deathDateReplaceBirth;
+    const deathStr = useDeathReplace ? formatDeathDate(data.deathDate!, lang) : '';
+    const ageUnit = A('岁', ' yrs');
+    const infoLine = useDeathReplace
+      ? [showAgeNum ? `${age}${ageUnit}` : '', deathStr].filter(Boolean).join(' · ')
+      : [birthStr, showAgeNum ? `${age}${ageUnit}` : ''].filter(Boolean).join(' · ');
+    if (infoLine) parts.push(`${A('出生', 'birth')}/${useDeathReplace ? A('离世', 'death') : A('年龄', 'age')}：${infoLine}`);
+  }
+  // 文化程度
+  if (isBasicVisible('education', displaySettings.showEducation) && data.education) {
+    parts.push(`${A('学历', 'education')}：${data.education}`);
+  }
+
+  // 可拖拽字段（可见且有值才读）
+  const getFieldValues = (key: string): string[] => {
+    let raw: unknown;
+    if (key === 'phone') raw = data.phone;
+    else if (key === 'qq') raw = data.qq;
+    else if (key === 'wechat') raw = data.wechat;
+    else if (key === 'email') raw = data.email;
+    else if (key === 'address') raw = data.address;
+    else if (key === 'licensePlate') raw = data.licensePlate;
+    else if (key === 'bilibili') raw = data.bilibili;
+    else if (key === 'discord') raw = data.discord;
+    else if (key === 'reddit') raw = data.reddit;
+    else if (key === 'threads') raw = data.threads;
+    else if (key === 'whatsapp') raw = data.whatsapp;
+    else if (key === 'douyin') raw = data.douyin;
+    else if (key === 'twitter') raw = data.twitter;
+    else if (key === 'xiaohongshu') raw = data.xiaohongshu;
+    else raw = data.customFieldValues?.[key];
+    return toArrayValue(raw) || [];
+  };
+  const isFieldVisible = (key: string): boolean => {
+    if (data.fieldVisibility && key in data.fieldVisibility) return data.fieldVisibility[key];
+    const toggleMap: Record<string, boolean> = {
+      phone: displaySettings.showPhone,
+      qq: displaySettings.showQq,
+      wechat: displaySettings.showWechat,
+      email: displaySettings.showEmail,
+      address: displaySettings.showAddress,
+      licensePlate: displaySettings.showLicensePlate,
+      bilibili: displaySettings.showBilibili,
+      discord: displaySettings.showDiscord,
+      reddit: displaySettings.showReddit,
+      threads: displaySettings.showThreads,
+      whatsapp: displaySettings.showWhatsapp,
+      douyin: displaySettings.showDouyin,
+      twitter: displaySettings.showTwitter,
+      xiaohongshu: displaySettings.showXiaohongshu,
+    };
+    if (key in toggleMap) return toggleMap[key];
+    return displaySettings.customFieldVisibility[key] ?? true;
+  };
+  const getLabel = (key: string): string =>
+    (lang === 'en' && BUILTIN_LABELS_EN[key] ? BUILTIN_LABELS_EN[key] : BUILTIN_LABELS[key]) ??
+    displaySettings.customFields.find((f) => f.id === key)?.label ??
+    key;
+
+  for (const key of displaySettings.fieldOrder) {
+    if (!isFieldVisible(key)) continue;
+    const values = getFieldValues(key);
+    if (values.length === 0) continue;
+    // 联系方式字段标注「可显示二维码」
+    const qrNote = QR_VISIBLE_FIELDS.has(key) ? A('（可显示二维码）', ' (QR available)') : '';
+    parts.push(`${getLabel(key)}：${values.join(join)}${qrNote}`);
+  }
+  // 个人自定义属性（与全局同名的已被全局优先，故跳过）
+  const globalCustomLabels = displaySettings.customFields.map((f) => f.label);
+  for (const attr of data.customAttributes || []) {
+    if (attr.key && attr.value && !attr.hidden && !globalCustomLabels.includes(attr.key)) {
+      parts.push(`${attr.key}：${attr.value}`);
+    }
+  }
+
+  // 直接关联的人（与卡片显示一致：父母/子女/爱人/其他）
+  // 注意：被隐藏（含间接隐藏）的人物不再朗读，避免读出不可见对象。
+  const related: { role: string; names: string[] }[] = [];
+  const nameById = new Map(nodes.map((n) => [n.id, n.data?.name]));
+  const isVisiblePerson = (nid: string): boolean => !hiddenNodeIds || !hiddenNodeIds.has(nid);
+  const parents: string[] = [];
+  const children: string[] = [];
+  const spouses: string[] = [];
+  const others: string[] = [];
+  for (const e of edges) {
+    if (e.source !== id && e.target !== id) continue;
+    const t = (e.data as EdgeData | undefined)?.type;
+    if (t === 'parent-child') {
+      if (e.target === id) {
+        if (isVisiblePerson(e.source)) parents.push(nameById.get(e.source) || A('未知', 'unknown'));
+      } else if (e.source === id) {
+        if (isVisiblePerson(e.target)) children.push(nameById.get(e.target) || A('未知', 'unknown'));
+      }
+    } else if (t === 'spouse') {
+      const other = e.source === id ? e.target : e.source;
+      if (isVisiblePerson(other)) spouses.push(nameById.get(other) || A('未知', 'unknown'));
+    } else if (t === 'custom') {
+      const other = e.source === id ? e.target : e.source;
+      if (isVisiblePerson(other)) {
+        const label = (e.data as EdgeData | undefined)?.customLabel;
+        others.push(label ? `${nameById.get(other) || A('未知', 'unknown')}（${label}）` : (nameById.get(other) || A('未知', 'unknown')));
+      }
+    }
+  }
+  if (parents.length) related.push({ role: A('父母', 'Parents'), names: parents });
+  if (children.length) related.push({ role: A('子女', 'Children'), names: children });
+  if (spouses.length) related.push({ role: A('爱人', 'Spouse'), names: spouses });
+  if (others.length) related.push({ role: A('其他', 'Other'), names: others });
+  if (related.length) {
+    const relatedText = related
+      .map((r) => `${r.role}：${r.names.join(join)}`)
+      .join(lang === 'en' ? '; ' : '；');
+    parts.push(`${A('关联', 'Related')}：${relatedText}`);
+  }
+
+  return parts.join(lang === 'en' ? ', ' : '，');
+}
+
+// 联系方式字段（支持长按显示二维码）：在描述中标注，与卡片一致
+const QR_VISIBLE_FIELDS = new Set<string>([
+  'phone',
+  'qq',
+  'wechat',
+  'email',
+  'address',
+  'licensePlate',
+]);
+
+/**
+ * 为屏幕阅读器生成「边（连线）」的可读描述。
+ * 包含连线两端的姓名、关系类型，以及方向（如「父→子 / 夫→妻 / 本人→同学」）。
+ */
+export function buildEdgeAriaLabel(
+  edge: Edge,
+  nodes: PersonNode[]
+): string {
+  const lang = useRelationshipStore.getState().language;
+  const A = (zh: string, en: string) => (lang === 'en' ? en : zh);
+  const nameById = new Map(nodes.map((n) => [n.id, n.data?.name || A('未命名', 'unnamed')]));
+  const genderById = new Map(nodes.map((n) => [n.id, (n.data as { gender?: string })?.gender]));
+  const sourceName = nameById.get(edge.source) || A('未命名', 'unnamed');
+  const targetName = nameById.get(edge.target) || A('未命名', 'unnamed');
+  const sourceGender = genderById.get(edge.source);
+  const targetGender = genderById.get(edge.target);
+  const data = edge.data as EdgeData | undefined;
+  const type = data?.type;
+  let relation = A('关系', 'relation');
+  let direction = '';
+
+  if (type === 'parent-child') {
+    if (edge.source === edge.target) {
+      relation = sourceGender === 'female' ? A('母女关系', 'mother-daughter') : A('父子关系', 'father-son');
+    } else {
+      // source=父母，target=子女；根据双方性别说出具体称谓
+      const parentWord = sourceGender === 'female' ? A('母亲', 'mother') : sourceGender === 'male' ? A('父亲', 'father') : A('家长', 'parent');
+      direction = `（${sourceName} ${A('是', 'is the')} ${targetName} ${A('的', '')}${parentWord}）`;
+    }
+  } else if (type === 'spouse') {
+    relation = data?.disconnected ? A('爱人关系（已断开）', 'spouse (disconnected)') : A('爱人关系', 'spouse');
+    // 爱人关系无方向（互为爱人），不使用「配偶」称呼
+    direction = `（${sourceName} ${A('与', 'and')} ${targetName} ${A('互为爱人', 'are spouses')}）`;
+  } else if (type === 'custom') {
+    // 「其他」类型关系无方向，仅描述关系称谓
+    const customLabel = data?.customLabel || A('自定义关系', 'custom relation');
+    relation = `${A('关系', 'relation')}：${customLabel}`;
+    direction = '';
+  } else {
+    direction = '';
+  }
+
+  return `${A('连线', 'Link')}：${sourceName} ${relation} ${targetName}${direction}`;
+}
 
 export type CustomFieldDef = { id: string; label: string };
 
@@ -134,6 +468,9 @@ export type DisplaySettings = {
   deathDateReplaceBirth: boolean; // 离世日期代替出生日期
   showCanvasHint: boolean; // 是否显示画布左上角提示
   showStatsBadge: boolean; // 是否在节点底部显示关系统计徽章
+  showCoordinateSystem: boolean; // 是否显示坐标系（以10年为单位显示浅色横线）
+  allowVerticalMove: boolean; // 是否允许垂直拖动节点（开启后调整的角色将脱离年龄坐标系）
+  coordinateLineStep: number; // 坐标系横线稀疏度：每 N 年一条（5年起步）
 };
 
 export type ViewportState = {
@@ -160,6 +497,10 @@ export type UndoSnapshot = {
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
   displaySettings: DisplaySettings;
+  focusNodeId: string | null; // 聚焦分析模式：以该人物为可见性中心（本身被隐藏）
+  // force 模式（第二次点击"全部"）额外隐藏的节点记录：key=`${nodeId}:${category}`，value=额外隐藏的节点 id 集合
+  // "无"恢复时据此还原全部被级联隐藏的节点（含"自己"）
+  forceHiddenMap: Map<string, Set<string>>;
 };
 
 const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
@@ -197,6 +538,9 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   deathDateReplaceBirth: true,
   showCanvasHint: true,
   showStatsBadge: true,
+  showCoordinateSystem: false,
+  allowVerticalMove: false,
+  coordinateLineStep: 10,
 };
 
 interface RelationshipState {
@@ -207,6 +551,9 @@ interface RelationshipState {
   displaySettings: DisplaySettings;
   grayedNodeIds: Set<string>;
   hiddenNodeIds: Set<string>; // 手动隐藏的节点集合（"隐藏此人"），自己不可隐藏
+  focusNodeId: string | null; // 聚焦分析模式：以该人物为可见性中心（本身被隐藏），与其不连通的人（含"自己"）一并隐藏
+  // force 模式（第二次点击"全部"）额外隐藏的节点记录：key=`${nodeId}:${category}`，value=额外隐藏的节点 id 集合
+  forceHiddenMap: Map<string, Set<string>>;
   viewport: ViewportState;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
@@ -256,7 +603,8 @@ interface RelationshipState {
   setCategoryFold: (
     nodeId: string,
     category: 'parents' | 'children' | 'spouse' | 'other' | string,
-    state: 'all' | 'none'
+    state: 'all' | 'none',
+    options?: { force?: boolean }
   ) => { ok: true } | { ok: false; reason: string };
   /** 隐藏此人（自己不可隐藏）：该人及缺失该人（割点）后从"自己"不可达的人一并隐藏 */
   hidePerson: (id: string) => void;
@@ -264,8 +612,15 @@ interface RelationshipState {
   unhidePerson: (id: string) => void;
   /** 全部取消隐藏：清空 hiddenNodeIds + 取消所有边的 collapsed 标记 */
   unhideAll: () => void;
+  /** 聚焦分析：隐藏所选人物，并隐藏与其不连通的所有人（含"自己"）。用于分析某人的人际关系 */
+  focusOnPerson: (id: string) => void;
+  /** 退出聚焦分析：恢复所选人物显示，返回以"自己"为可见性中心的视图 */
+  clearFocusMode: () => void;
   setAsSelf: (id: string) => void;
   setViewport: (vp: ViewportState) => void;
+  // 界面语言（中/英），与 URL ?lang= 参数及 <html lang> 同步
+  language: Language;
+  setLanguage: (lang: Language) => void;
   clearBrowserData: () => void;
   layoutGraph: () => void;
   recalculateRelationships: () => void;
@@ -295,10 +650,10 @@ const initialNodes: PersonNode[] = [
   { id: 'n2', type: 'person', position: { x: 0, y: 0 }, data: { name: '曾祖母', avatar: '', relationship: '曾祖母', birthDate: '1932-05', gender: 'female' } },
   { id: 'n3', type: 'person', position: { x: 0, y: 0 }, data: { name: '爷爷', avatar: '', relationship: '爷爷', birthDate: '1955-03', gender: 'male' } },
   { id: 'n4', type: 'person', position: { x: 0, y: 0 }, data: { name: '奶奶', avatar: '', relationship: '奶奶', birthDate: '1958-07', gender: 'female' } },
-  { id: 'n5', type: 'person', position: { x: 0, y: 0 }, data: { name: '爸爸', namePinyin: 'Zhang Wei', avatar: '', relationship: '爸爸', birthDate: '1980-02', gender: 'male', education: '硕士', phone: '13900139000', qq: '12345678' } },
+  { id: 'n5', type: 'person', position: { x: 0, y: 0 }, data: { name: '爸爸', namePinyin: 'Zhang Wei', avatar: '', relationship: '爸爸', birthDate: '1980-02', gender: 'male', education: '硕士', phone: ['13900139000'], qq: ['12345678'] } },
   { id: 'n6', type: 'person', position: { x: 0, y: 0 }, data: { name: '妈妈', avatar: '', relationship: '妈妈', birthDate: '1982-09', gender: 'female' } },
   { id: 'n7', type: 'person', position: { x: 0, y: 0 }, data: { name: '叔叔', avatar: '', relationship: '叔叔', birthDate: '1985-11', gender: 'male' } },
-  { id: 'self', type: 'person', position: { x: 0, y: 0 }, data: { name: '自己', namePinyin: 'Zhang San', formerName: '张小三', avatar: '', relationship: '自己', popularName: '小三', birthDate: '2005-06', gender: 'male', education: '本科', phone: '13800138000', wechat: 'zhangsan_wx', email: 'zhangsan@example.com', address: '北京市朝阳区', licensePlate: '京A88888', isSelf: true } },
+  { id: 'self', type: 'person', position: { x: 0, y: 0 }, data: { name: '自己', namePinyin: 'Zhang San', formerName: ['张小三'], avatar: '', relationship: '自己', popularName: ['小三'], birthDate: '2005-06', gender: 'male', education: '本科', phone: ['13800138000'], wechat: ['zhangsan_wx'], email: ['zhangsan@example.com'], address: ['北京市朝阳区'], licensePlate: ['京A88888'], isSelf: true } },
   { id: 'n9', type: 'person', position: { x: 0, y: 0 }, data: { name: '妹妹', avatar: '', relationship: '妹妹', birthDate: '2008-08', gender: 'female' } },
   { id: 'n10', type: 'person', position: { x: 0, y: 0 }, data: { name: '爱人', avatar: '', relationship: '爱人', birthDate: '2006-04', gender: 'female' } },
   { id: 'n11', type: 'person', position: { x: 0, y: 0 }, data: { name: '儿子', avatar: '', relationship: '儿子', birthDate: '2030-01', gender: 'male' } },
@@ -337,6 +692,7 @@ type PersistedState = {
   displaySettings: DisplaySettings;
   viewport: ViewportState;
   hiddenNodeIds?: string[]; // 手动隐藏的节点（"隐藏此人"）
+  focusNodeId?: string | null; // 聚焦分析模式中心人物
 };
 
 /**
@@ -378,6 +734,7 @@ function loadPersistedState(): PersistedState | null {
       displaySettings,
       viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
       hiddenNodeIds: Array.isArray(data.hiddenNodeIds) ? data.hiddenNodeIds : undefined,
+      focusNodeId: typeof data.focusNodeId === 'string' ? data.focusNodeId : null,
     };
   } catch (e) {
     console.error('加载浏览器数据失败', e);
@@ -412,7 +769,13 @@ function normalizeNodeData(node: PersonNode): PersonNode {
       changed = true;
     }
   }
-  return changed ? { ...node, data: data as PersonData } : node;
+  // 无障碍：覆盖库默认的英文 "node" 角色描述（ariaLabel 在渲染层依据显示开关与连线生成）
+  return {
+    ...node,
+    data: data as PersonData,
+    ariaRole: 'group',
+    domAttributes: { ...(node.domAttributes ?? {}), 'aria-roledescription': '人物' },
+  };
 }
 
 function normalizeNodes(nodes: PersonNode[]): PersonNode[] {
@@ -447,6 +810,13 @@ const initialViewport = persisted ? persisted.viewport : { x: 0, y: 0, zoom: 1 }
 const initialHiddenNodeIds = new Set<string>(
   (persisted?.hiddenNodeIds || []).filter((id) => initialNodesResolved.some((n) => n.id === id))
 );
+// 聚焦分析中心人物：仅当该节点仍存在且处于隐藏集合中时生效
+const initialFocusNodeId =
+  persisted?.focusNodeId &&
+  initialHiddenNodeIds.has(persisted.focusNodeId) &&
+  initialNodesResolved.some((n) => n.id === persisted.focusNodeId)
+    ? persisted.focusNodeId
+    : null;
 // 首次加载（无持久化数据）时需要标记重新计算灰色节点
 const hasPersistedData = !!persisted;
 
@@ -492,11 +862,9 @@ function applyRelativeYPositions(nodes: PersonNode[], gapScale: number = 1): Per
   const scale = gapScale > 0 ? gapScale : 1;
 
   function getGapPixels(years: number) {
+    // 线性均匀：每年固定像素值，使坐标系均匀分布
     if (years <= 0) return 0;
-    if (years <= 3) return years * 20 * scale; // 0-3 years: up to 60px
-    if (years <= 10) return (60 + (years - 3) * 10) * scale; // 3-10 years: up to 130px
-    if (years <= 20) return (130 + (years - 10) * 8) * scale; // 10-20 years: up to 210px
-    return (210 + (years - 20) * 4) * scale; // >20 years: 4px per year
+    return years * 10 * scale; // 10px per year
   }
 
   // Group nodes by birthDate to ensure people with EXACT same birthDate have EXACT same Y
@@ -524,15 +892,76 @@ function applyRelativeYPositions(nodes: PersonNode[], gapScale: number = 1): Per
     previousTime = currentTime;
   }
 
-  const nodesWithY = nodes.map(node => ({
-    ...node,
-    position: {
-      ...node.position,
-      y: dateToY.get(node.data.birthDate || '1990-01') || 0
+  const nodesWithY = nodes.map(node => {
+    // 用户手动垂直拖动过的节点：保留其 Y，不重新计算
+    if (node.data.yOverridden) {
+      return node;
     }
-  }));
+    return {
+      ...node,
+      position: {
+        ...node.position,
+        y: dateToY.get(node.data.birthDate || '1990-01') || 0
+      }
+    };
+  });
 
   return resolveOverlaps(nodesWithY);
+}
+
+/**
+ * 计算坐标系横线：从根出生年份（最早节点）起，每 step 年一条横线。
+ * 横线在 Y 轴上等距均匀分布（线性：每年固定像素值），形成年份刻度尺。
+ * 节点按相同的线性公式分布，因此横线与同年份节点行严格对齐。
+ * 上限自动取：最大年龄差向上取 step 的倍数。
+ * 返回 [{ year, y }]，y 为与节点 Y 同坐标系的偏移。
+ */
+export function computeCoordinateLines(
+  nodes: PersonNode[],
+  gapScale: number = 1,
+  step: number = 10
+): { year: number; y: number }[] {
+  if (nodes.length === 0) return [];
+  const scale = gapScale > 0 ? gapScale : 1;
+  // 防御：step 至少 5
+  const safeStep = step >= 5 ? Math.round(step) : 5;
+
+  // 取最早与最晚出生年份（含月份浮点，与节点 Y 基准一致）
+  let minYearFloat = Infinity;
+  let maxYearFloat = -Infinity;
+  let minYearInt = Infinity;
+  let maxYearInt = -Infinity;
+  for (const n of nodes) {
+    if (n.data.birthDate) {
+      const parts = n.data.birthDate.split('-');
+      const yi = parseInt(parts[0], 10);
+      if (isNaN(yi)) continue;
+      const mi = parts[1] ? parseInt(parts[1], 10) : 1;
+      const yf = yi + (isNaN(mi) ? 0 : (mi - 1) / 12);
+      if (yf < minYearFloat) { minYearFloat = yf; minYearInt = yi; }
+      if (yf > maxYearFloat) { maxYearFloat = yf; maxYearInt = yi; }
+    }
+  }
+  if (!isFinite(minYearFloat)) return [];
+  if (!isFinite(maxYearFloat)) { maxYearFloat = minYearFloat; maxYearInt = minYearInt; }
+
+  // 起始年份：向下取整到 step 的倍数（如 step=10、最早1989 → 1980）
+  // 结束年份：向上取整到 step 的倍数（如 step=10、最晚2012 → 2020）
+  const startYear = Math.floor(minYearInt / safeStep) * safeStep;
+  const endYear = Math.ceil(maxYearInt / safeStep) * safeStep;
+
+  // 每年固定像素值（线性均匀：10px/年）
+  const PX_PER_YEAR = 10 * scale;
+
+  const lines: { year: number; y: number }[] = [];
+  // Y 坐标系以"最早节点 birthDate（含月份）"为 Y=0 基准（与 applyRelativeYPositions 一致），
+  // 因此横线 Y = (lineYearFloat - minYearFloat) * PX_PER_YEAR，横线与节点行严格对齐，
+  // 横线年份标签按 step 倍数对齐（如 1980、1990、2000...）。
+  for (let year = startYear; year <= endYear; year += safeStep) {
+    const yearFloat = year; // 横线对应整年 1月1日（year-01）
+    lines.push({ year, y: (yearFloat - minYearFloat) * PX_PER_YEAR });
+  }
+  return lines;
 }
 
 /**
@@ -646,19 +1075,24 @@ function computeGrayedNodes(
 export function computeInvisibleNodes(
   nodes: PersonNode[],
   edges: Edge[],
-  hiddenNodeIds: Set<string>
+  hiddenNodeIds: Set<string>,
+  focusNodeId?: string | null
 ): Set<string> {
   const selfNode = nodes.find((n) => n.data.isSelf);
-  if (!selfNode) {
-    // 无"自己"节点：仅隐藏手动隐藏的
+  const selfHidden = selfNode ? hiddenNodeIds.has(selfNode.id) : false;
+  // 聚焦分析：以所选人物为可见性中心（即使无"自己"节点也生效）
+  const focus = focusNodeId && nodes.some((n) => n.id === focusNodeId) ? focusNodeId : null;
+  // 根节点优先级：聚焦人物 > "自己"（仅当未手动隐藏）> 无根节点
+  const rootId = focus ?? (selfNode && !selfHidden ? selfNode.id : null);
+  if (!rootId) {
+    // 无根节点（"自己"被隐藏且无聚焦）：仅隐藏手动隐藏的节点
     return new Set(hiddenNodeIds);
   }
   const hasCollapsed = edges.some((e) => (e.data as EdgeData)?.collapsed);
-  if (!hasCollapsed && hiddenNodeIds.size === 0) return new Set<string>();
+  if (!focus && !hasCollapsed && hiddenNodeIds.size === 0) return new Set<string>();
 
-  const selfId = selfNode.id;
-  const reachable = new Set<string>([selfId]);
-  const queue: string[] = [selfId];
+  const reachable = new Set<string>([rootId]);
+  const queue: string[] = [rootId];
   while (queue.length > 0) {
     const cur = queue.shift()!;
     for (const e of edges) {
@@ -667,25 +1101,61 @@ export function computeInvisibleNodes(
       if (e.source === cur) next = e.target;
       else if (e.target === cur) next = e.source;
       if (!next || reachable.has(next)) continue;
-      if (hiddenNodeIds.has(next)) continue; // 跳过隐藏节点（割点缺失）
+      // 根节点即使被手动隐藏也作为起点，其余隐藏节点跳过（割点缺失）
+      if (hiddenNodeIds.has(next) && next !== rootId) continue;
       reachable.add(next);
       queue.push(next);
     }
   }
 
-  // 不可达 = 不可见（含直接隐藏者本身，因它们被跳过故不可达）
-  return new Set(nodes.filter((n) => n.id !== selfId && !reachable.has(n.id)).map((n) => n.id));
+  if (focus) {
+    // 聚焦模式：所选人物本身被隐藏；"自己"不特殊保护，与所选人物不连通则一并隐藏
+    return new Set(nodes.filter((n) => !reachable.has(n.id) || n.id === rootId).map((n) => n.id));
+  }
+  if (selfHidden) {
+    // "自己"被手动隐藏（如强制隐藏含"自己"的类别）：不可达的节点 + 手动隐藏的节点全部不可见（含"自己"）
+    return new Set(nodes.filter((n) => !reachable.has(n.id)).map((n) => n.id));
+  }
+  // 正常模式：不可达 = 不可见（含直接隐藏者本身，因它们被跳过故不可达）；"自己"永不被隐藏
+  return new Set(nodes.filter((n) => n.id !== selfNode!.id && !reachable.has(n.id)).map((n) => n.id));
+}
+
+/**
+ * 以指定人物为根节点做 BFS（忽略边的 collapsed 状态，但跳过 hiddenNodeIds 中的节点），
+ * 返回与根节点不连通的所有节点（含"自己"）。用于 force 模式下计算级联隐藏集。
+ */
+export function computeDisconnectedNodes(
+  nodes: PersonNode[],
+  edges: Edge[],
+  rootId: string,
+  hiddenNodeIds: Set<string>
+): Set<string> {
+  const reachable = new Set<string>([rootId]);
+  const queue: string[] = [rootId];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const e of edges) {
+      let next: string | null = null;
+      if (e.source === cur) next = e.target;
+      else if (e.target === cur) next = e.source;
+      if (!next || reachable.has(next)) continue;
+      if (hiddenNodeIds.has(next) && next !== rootId) continue;
+      reachable.add(next);
+      queue.push(next);
+    }
+  }
+  return new Set(nodes.filter((n) => !reachable.has(n.id)).map((n) => n.id));
 }
 
 export const useRelationshipStore = create<RelationshipState>((set, get) => {
   const MAX_UNDO = 30;
   // 在「大操作」前调用：将当前状态压入撤销栈
   const pushUndo = (label: string) => {
-    const { nodes, edges, grayedNodeIds, hiddenNodeIds, selectedNodeId, selectedEdgeId, displaySettings, undoStack } = get();
+    const { nodes, edges, grayedNodeIds, hiddenNodeIds, selectedNodeId, selectedEdgeId, displaySettings, focusNodeId, forceHiddenMap, undoStack } = get();
     set({
       undoStack: [
         ...undoStack,
-        { label, nodes, edges, grayedNodeIds, hiddenNodeIds, selectedNodeId, selectedEdgeId, displaySettings },
+        { label, nodes, edges, grayedNodeIds, hiddenNodeIds, selectedNodeId, selectedEdgeId, displaySettings, focusNodeId, forceHiddenMap: new Map(forceHiddenMap) },
       ].slice(-MAX_UNDO),
     });
   };
@@ -699,6 +1169,8 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     ? computeGrayedNodes(initialNodesResolved, initialEdgesResolved, initialDisplaySettings.showGrayOnDisconnect)
     : new Set<string>(),
   hiddenNodeIds: initialHiddenNodeIds,
+  focusNodeId: initialFocusNodeId,
+  forceHiddenMap: new Map<string, Set<string>>(),
   viewport: initialViewport,
   undoStack: [],
   connectionMode: 'off',
@@ -707,26 +1179,43 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   showHelpPage: false,
   settingsPanelCollapsed: false,
   edgeMenu: null,
+  language: getInitialLanguage(),
 
   onNodesChange: (changes) => {
     const currentNodes = get().nodes;
+    const allowVerticalMove = get().displaySettings.allowVerticalMove;
+    // 关闭垂直移动时：强制锁定 Y，仅允许水平拖动
+    // 开启垂直移动时：自由拖动，拖动时标记节点 Y 已被覆盖，后续 applyRelativeYPositions 跳过
     const modifiedChanges = changes.map(change => {
       if (change.type === 'position' && change.position) {
         const node = currentNodes.find(n => n.id === change.id);
-        if (node) {
-          // Keep the original Y position to restrict dragging to X-axis only
+        if (node && !allowVerticalMove) {
+          // 锁定 Y 到原值
           return {
             ...change,
             position: { x: change.position.x, y: node.position.y },
-            positionAbsolute: change.positionAbsolute ? { x: change.positionAbsolute.x, y: node.position.y } : undefined
+            positionAbsolute: change.positionAbsolute
+              ? { x: change.positionAbsolute.x, y: node.position.y }
+              : undefined,
           };
         }
       }
       return change;
     });
-    set({
-      nodes: applyNodeChanges(modifiedChanges, currentNodes) as PersonNode[],
-    });
+    const applied = applyNodeChanges(modifiedChanges, currentNodes) as PersonNode[];
+    // 收集本次拖动的节点 id（仅开启垂直移动时才标记）
+    if (allowVerticalMove) {
+      const draggedIds = new Set<string>();
+      for (const c of changes) {
+        if (c.type === 'position' && c.dragging && c.id) draggedIds.add(c.id);
+      }
+      const finalNodes = draggedIds.size > 0
+        ? applied.map(n => draggedIds.has(n.id) ? { ...n, data: { ...n.data, yOverridden: true } } : n)
+        : applied;
+      set({ nodes: finalNodes });
+    } else {
+      set({ nodes: applied });
+    }
   },
 
   onEdgesChange: (changes) => {
@@ -791,16 +1280,28 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     const newEdges = get().edges.filter(
       (edge) => !toDelete.has(edge.source) && !toDelete.has(edge.target)
     );
-    const { displaySettings, hiddenNodeIds: prevHidden } = get();
+    const { displaySettings, hiddenNodeIds: prevHidden, focusNodeId: prevFocus, forceHiddenMap: prevForceMap } = get();
     // 清理被删除者的隐藏标记
     const hiddenNodeIds = new Set(prevHidden);
     for (const id of toDelete) hiddenNodeIds.delete(id);
+    // 清理 forceHiddenMap 中引用被删除节点的条目
+    const forceHiddenMap = new Map<string, Set<string>>();
+    for (const [key, set] of prevForceMap) {
+      const [kNodeId] = key.split(':');
+      if (toDelete.has(kNodeId)) continue; // key 的 nodeId 被删除则丢弃
+      const cleaned = new Set<string>();
+      for (const id of set) if (!toDelete.has(id)) cleaned.add(id);
+      if (cleaned.size > 0) forceHiddenMap.set(key, cleaned);
+    }
     set({
       nodes: applyRelativeYPositions(filteredNodes, displaySettings.verticalGapScale),
       edges: newEdges,
       selectedNodeId: toDelete.has(get().selectedNodeId || '') ? null : get().selectedNodeId,
       grayedNodeIds: computeGrayedNodes(filteredNodes, newEdges, displaySettings.showGrayOnDisconnect),
       hiddenNodeIds,
+      forceHiddenMap,
+      // 删除聚焦分析中心人物时退出聚焦模式
+      focusNodeId: prevFocus && toDelete.has(prevFocus) ? null : prevFocus,
     });
     get().recalculateRelationships();
   },
@@ -1016,7 +1517,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
         overrides.set(node.id, node.data.relationship);
       }
     });
-    const relationships = calculateRelationships(nodes, edges, overrides);
+    const relationships = calculateRelationships(nodes, edges, overrides, get().language);
 
     const newNodes = nodes.map(node => {
       const rel = relationships.get(node.id);
@@ -1096,7 +1597,16 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     set({ displaySettings: newSettings });
     // 垂直间距比例变化时重新应用 Y 布局
     if (patch.verticalGapScale !== undefined && patch.verticalGapScale !== oldSettings.verticalGapScale) {
-      set({ nodes: applyRelativeYPositions(get().nodes, newSettings.verticalGapScale) });
+      const oldScale = oldSettings.verticalGapScale || 1;
+      const newScale = newSettings.verticalGapScale || 1;
+      const ratio = newScale / oldScale;
+      // 对用户手动垂直拖动过的节点，按比例缩放其 Y，保持相对位置关系（等比例调整）
+      const scaledNodes = get().nodes.map(n =>
+        n.data.yOverridden
+          ? { ...n, position: { ...n.position, y: n.position.y * ratio } }
+          : n
+      );
+      set({ nodes: applyRelativeYPositions(scaledNodes, newScale) });
     }
     // 变灰设置变化时重新计算灰色节点
     if (patch.showGrayOnDisconnect !== undefined) {
@@ -1233,9 +1743,10 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     });
   },
 
-  setCategoryFold: (nodeId, category, state) => {
+  setCategoryFold: (nodeId, category, state, options) => {
     const { edges, nodes, hiddenNodeIds } = get();
     const selfId = nodes.find((n) => n.data.isSelf)?.id;
+    const force = options?.force === true; // 第二次点击"全部"：绕过"自己"守卫，强制隐藏类别成员（含"自己"），仍保护所选人物
     // 选出该节点对应类别的所有边
     const matchedEdgeIds = new Set<string>();
     for (const e of edges) {
@@ -1272,14 +1783,32 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
         categoryMembers.add(far);
       }
       // 守卫1：类别成员包含"自己"（如隐藏妈妈的子女、儿子的父母）→ 整个动作无效
-      if (selfId && categoryMembers.has(selfId)) {
+      // 但 force=true（第二次点击"全部"）时绕过此守卫，允许隐藏"自己"
+      if (!force && selfId && categoryMembers.has(selfId)) {
         return { ok: false, reason: '该类别包含"自己"，无法隐藏' };
       }
-      // 试算隐藏后的不可见集：隐藏类别成员后，与"自己"不连通的全部隐藏
+      // 试算隐藏后的不可见集：隐藏类别成员后，与可见性中心（聚焦人物或"自己"）不连通的全部隐藏
       const tentativeHidden = new Set(hiddenNodeIds);
       for (const id of categoryMembers) tentativeHidden.add(id);
-      const wouldHide = computeInvisibleNodes(nodes, edges, tentativeHidden);
-      // 守卫2：隐藏会导致当前选中者被隐藏 → 不隐藏
+
+      if (force) {
+        // 第二次点击"全部"：以所选人物为根，隐藏类别成员 + 与所选人物不连通的所有人（含"自己"）
+        // 所选人物本身不被隐藏
+        const disconnected = computeDisconnectedNodes(nodes, edges, nodeId, tentativeHidden);
+        for (const id of disconnected) tentativeHidden.add(id);
+        // 记录额外隐藏的节点（类别成员 + 不连通者），"无"恢复时据此全部还原
+        const mapKey = `${nodeId}:${category}`;
+        const extraHidden = new Set<string>([...categoryMembers, ...disconnected]);
+        pushUndo('强制隐藏类别关系');
+        set({
+          hiddenNodeIds: tentativeHidden,
+          forceHiddenMap: new Map(get().forceHiddenMap).set(mapKey, extraHidden),
+        });
+        return { ok: true } as const;
+      }
+
+      const wouldHide = computeInvisibleNodes(nodes, edges, tentativeHidden, get().focusNodeId);
+      // 守卫2：隐藏会导致当前选中者被级联隐藏 → 不隐藏
       if (wouldHide.has(nodeId)) {
         return { ok: false, reason: '该操作会导致当前角色被隐藏，已取消' };
       }
@@ -1291,7 +1820,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       return { ok: true } as const;
     }
 
-    // 无：取消该类别隐藏 + 取消隐藏该类别边（含"隐藏此人"直接隐藏的）
+    // 无：取消该类别隐藏 + 取消隐藏该类别边（含"隐藏此人"直接隐藏的）+ 还原 force 模式额外隐藏的节点
     pushUndo('展开类别关系');
     const newEdges = edges.map((e) =>
       matchedEdgeIds.has(e.id) ? { ...e, data: { ...e.data, collapsed: false } } : e
@@ -1300,9 +1829,21 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     for (const e of matchedEdges) {
       newHidden.delete(e.source === nodeId ? e.target : e.source);
     }
+    // 还原 force 模式下额外隐藏的节点（含"自己"和级联隐藏的不连通者）
+    const mapKey = `${nodeId}:${category}`;
+    const forceExtra = get().forceHiddenMap.get(mapKey);
+    if (forceExtra) {
+      for (const id of forceExtra) newHidden.delete(id);
+    }
+    const newForceHiddenMap = new Map(get().forceHiddenMap);
+    newForceHiddenMap.delete(mapKey);
+    const prevFocus = get().focusNodeId;
     set({
       edges: newEdges,
       hiddenNodeIds: newHidden,
+      forceHiddenMap: newForceHiddenMap,
+      // 若展开操作使聚焦中心人物恢复显示，则退出聚焦模式
+      focusNodeId: prevFocus && !newHidden.has(prevFocus) ? null : prevFocus,
     });
     return { ok: true } as const;
   },
@@ -1324,7 +1865,12 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     pushUndo('取消隐藏');
     const hiddenNodeIds = new Set(get().hiddenNodeIds);
     hiddenNodeIds.delete(id);
-    set({ hiddenNodeIds });
+    // 取消隐藏聚焦中心人物时退出聚焦模式
+    const prevFocus = get().focusNodeId;
+    set({
+      hiddenNodeIds,
+      focusNodeId: prevFocus === id ? null : prevFocus,
+    });
   },
 
   unhideAll: () => {
@@ -1333,11 +1879,56 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     pushUndo('全部取消隐藏');
     set({
       hiddenNodeIds: new Set<string>(),
+      focusNodeId: null, // 退出聚焦分析模式
+      forceHiddenMap: new Map(),
       edges: edges.map((e) =>
         (e.data as EdgeData)?.collapsed
           ? { ...e, data: { ...e.data, collapsed: false } }
           : e
       ),
+    });
+  },
+
+  focusOnPerson: (id) => {
+    const { nodes, edges, hiddenNodeIds } = get();
+    if (!nodes.some((n) => n.id === id)) return;
+    pushUndo('聚焦分析');
+    // 1. 先隐藏所选人物
+    const newHidden = new Set(hiddenNodeIds);
+    newHidden.add(id);
+    // 2. 再隐藏与所选人物不连通的所有人（基于全部关系边，忽略当前折叠/隐藏状态；包含"自己"）
+    const connected = new Set<string>([id]);
+    const queue: string[] = [id];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (const e of edges) {
+        let next: string | null = null;
+        if (e.source === cur) next = e.target;
+        else if (e.target === cur) next = e.source;
+        if (!next || connected.has(next)) continue;
+        connected.add(next);
+        queue.push(next);
+      }
+    }
+    for (const n of nodes) {
+      if (!connected.has(n.id)) newHidden.add(n.id);
+    }
+    set({
+      hiddenNodeIds: newHidden,
+      focusNodeId: id,
+      selectedNodeId: null, // 隐藏后关闭详情面板
+    });
+  },
+
+  clearFocusMode: () => {
+    const { focusNodeId, hiddenNodeIds } = get();
+    if (!focusNodeId) return;
+    pushUndo('退出聚焦分析');
+    const newHidden = new Set(hiddenNodeIds);
+    newHidden.delete(focusNodeId); // 恢复所选人物的显示
+    set({
+      hiddenNodeIds: newHidden,
+      focusNodeId: null,
     });
   },
 
@@ -1352,12 +1943,22 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     set({
       nodes,
       grayedNodeIds: computeGrayedNodes(nodes, edges, displaySettings.showGrayOnDisconnect),
+      focusNodeId: null, // 切换"自己"后退出聚焦分析模式
     });
     get().recalculateRelationships();
   },
 
   setViewport: (vp) => {
     set({ viewport: vp });
+  },
+
+  setLanguage: (lang) => {
+    syncLanguageToUrl(lang);
+    set({ language: lang });
+    // 切换语言时同步网页标题
+    document.title = 'Relationship Graph-人际关系图谱';
+    // 语言改变后重新计算称谓，使节点上的称呼同步更新
+    get().recalculateRelationships();
   },
 
   clearBrowserData: () => {
@@ -1376,7 +1977,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
         data: {
           name: '我',
           avatar: '',
-          relationship: '自己',
+          relationship: get().language === 'en' ? 'myself' : '自己',
           birthDate: '',
           gender: 'unknown',
           isSelf: true,
@@ -1390,6 +1991,8 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       displaySettings: { ...DEFAULT_DISPLAY_SETTINGS, persistToBrowser: true },
       grayedNodeIds: new Set<string>(),
       hiddenNodeIds: new Set<string>(),
+      focusNodeId: null,
+      forceHiddenMap: new Map(),
       viewport: { x: 0, y: 0, zoom: 1 },
     });
   },
@@ -1419,7 +2022,16 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
 
     dagre.layout(dagreGraph);
 
-    const newNodes = nodes.map((node) => {
+    // 整理布局时清除所有 yOverridden 标记，让 Y 重新按出生年月计算
+    const clearedNodes = nodes.map((node) => {
+      if (node.data.yOverridden) {
+        const { yOverridden, ...rest } = node.data;
+        return { ...node, data: rest };
+      }
+      return node;
+    });
+
+    const newNodes = clearedNodes.map((node) => {
       const nodeWithPosition = dagreGraph.node(node.id);
       return {
         ...node,
@@ -1455,6 +2067,8 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
         displaySettings: newDisplaySettings,
         grayedNodeIds: computeGrayedNodes(newNodes, newEdges, newDisplaySettings.showGrayOnDisconnect),
         hiddenNodeIds: newHiddenNodeIds,
+        focusNodeId: null, // 导入数据后退出聚焦分析模式
+        forceHiddenMap: new Map(),
         viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
       });
       get().recalculateRelationships();
@@ -1598,6 +2212,8 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       selectedNodeId: snapshot.selectedNodeId,
       selectedEdgeId: snapshot.selectedEdgeId,
       displaySettings: snapshot.displaySettings,
+      focusNodeId: snapshot.focusNodeId,
+      forceHiddenMap: new Map(snapshot.forceHiddenMap),
       undoStack: undoStack.slice(0, -1),
     });
   },
@@ -1626,5 +2242,16 @@ useRelationshipStore.subscribe((state) => {
     displaySettings: state.displaySettings,
     viewport: state.viewport,
     hiddenNodeIds: Array.from(state.hiddenNodeIds),
+    focusNodeId: state.focusNodeId,
   });
 });
+
+// 初始化：同步 <html lang> 与 URL，并确保初始称谓匹配当前语言
+(function initLanguage() {
+  const lang = useRelationshipStore.getState().language;
+  syncLanguageToUrl(lang);
+  // 初始化网页标题
+  document.title = 'Relationship Graph-人际关系图谱';
+  // 若持久化数据中的称谓是另一种语言，重算为当前语言
+  useRelationshipStore.getState().recalculateRelationships();
+})();

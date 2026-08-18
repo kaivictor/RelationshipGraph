@@ -1,7 +1,11 @@
 import { BaseEdge, EdgeLabelRenderer, getStraightPath, EdgeProps } from '@xyflow/react';
 import { Heart, HeartCrack } from 'lucide-react';
+import { useRelationshipStore, buildEdgeAriaLabel } from '../store/useRelationshipStore';
 
 export default function SpouseEdge({
+  id,
+  source,
+  target,
   sourceX,
   sourceY,
   targetX,
@@ -18,6 +22,11 @@ export default function SpouseEdge({
   });
 
   const disconnected = (data as { disconnected?: boolean })?.disconnected;
+  const nodes = useRelationshipStore((s) => s.nodes);
+  const ariaText = buildEdgeAriaLabel(
+    { id, source, target, data } as Parameters<typeof buildEdgeAriaLabel>[0],
+    nodes
+  );
 
   return (
     <>
@@ -33,6 +42,7 @@ export default function SpouseEdge({
       />
       <EdgeLabelRenderer>
         <div
+          aria-hidden="true"
           style={{
             position: 'absolute',
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
@@ -41,12 +51,16 @@ export default function SpouseEdge({
           className="nodrag nopan bg-white rounded-full p-0.5 shadow-sm border flex items-center justify-center"
         >
           {disconnected ? (
-            <HeartCrack className="w-4 h-4 text-gray-400" />
+            <HeartCrack className="w-4 h-4 text-gray-400" aria-hidden="true" />
           ) : (
-            <Heart className="w-4 h-4 text-red-500 fill-red-500" />
+            <Heart className="w-4 h-4 text-red-500 fill-red-500" aria-hidden="true" />
           )}
         </div>
       </EdgeLabelRenderer>
-    </>
-  );
-}
+      {/* 屏幕阅读器：React Flow 不读取 edge.ariaLabel，这里用 sr-only 文本承载「两端+关系+方向」 */}
+      <EdgeLabelRenderer>
+      <span className="sr-only">{ariaText}</span>
+      </EdgeLabelRenderer>
+      </>
+      );
+      }

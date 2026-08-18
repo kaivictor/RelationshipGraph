@@ -3,21 +3,26 @@ import {
   ReactFlow,
   Background,
   Controls,
+  ControlButton,
   MiniMap,
   Panel,
   useReactFlow,
+  useViewport,
+  useStore,
+  useStoreApi,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useRelationshipStore, computeInvisibleNodes } from '../store/useRelationshipStore';
+import { useRelationshipStore, computeInvisibleNodes, computeCoordinateLines, buildNodeAriaLabelVisible, buildEdgeAriaLabel } from '../store/useRelationshipStore';
 import { PersonNodeComponent } from './PersonNode';
 import SpouseEdge from './SpouseEdge';
 import ParentChildEdge from './ParentChildEdge';
 import CustomEdge from './CustomEdge';
 import { toPng, toSvg } from 'html-to-image';
-import { Download, Upload, Image as ImageIcon, ChevronDown, Undo2, HelpCircle, Spline, X } from 'lucide-react';
+import { Download, Upload, Image as ImageIcon, ChevronDown, Undo2, HelpCircle, Spline, X, Plus, Minus, Maximize, Lock, Unlock } from 'lucide-react';
 import { parseXlsxFile } from '../utils/xlsxTemplate';
 import { exportFile, exportImageFile } from '../utils/nativeExport';
 import clsx from 'clsx';
+import { tt, useLang } from '../i18n';
 
 const nodeTypes = {
   person: PersonNodeComponent,
@@ -30,6 +35,7 @@ const edgeTypes = {
 };
 
 export default function Relationship() {
+  useLang();
   const {
     nodes,
     edges,
@@ -56,7 +62,18 @@ export default function Relationship() {
   } = useRelationshipStore();
 
   const showCanvasHint = useRelationshipStore((s) => s.displaySettings.showCanvasHint);
+  const showCoordinateSystem = useRelationshipStore((s) => s.displaySettings.showCoordinateSystem);
+  const verticalGapScale = useRelationshipStore((s) => s.displaySettings.verticalGapScale);
+  const coordinateLineStep = useRelationshipStore((s) => s.displaySettings.coordinateLineStep);
   const hiddenNodeIds = useRelationshipStore((s) => s.hiddenNodeIds);
+  const displaySettings = useRelationshipStore((s) => s.displaySettings);
+
+  // 坐标系横线：与 viewport 同步变换
+  const viewport = useViewport();
+  const coordinateLines = useMemo(
+    () => showCoordinateSystem ? computeCoordinateLines(nodes, verticalGapScale, coordinateLineStep) : [],
+    [showCoordinateSystem, nodes, verticalGapScale, coordinateLineStep]
+  );
 
   // 不可见集合 = 隐藏边（桥语义）+ 隐藏节点（割点语义）共同作用下，从"自己"不可达的节点
   const invisibleNodeIds = useMemo(() => {
@@ -74,14 +91,55 @@ export default function Relationship() {
       (!invisibleNodeIds || (!invisibleNodeIds.has(e.source) && !invisibleNodeIds.has(e.target)))
   );
 
+  // 屏幕阅读器标签：为连线生成「两端姓名 + 关系 + 方向」的中文描述，
+  // 覆盖 React Flow 默认的英文 "Edge from X to Y"。
+  const visibleEdgesWithAria = useMemo(
+    () =>
+      visibleEdges.map((e) => ({
+        ...e,
+        ariaLabel: buildEdgeAriaLabel(e, nodes),
+      })),
+    [visibleEdges, nodes]
+  );
+
+  // 屏幕阅读器标签：依据「显示开关 + 连线」上下文生成，做到「显示的讲、隐藏的不讲」，并介绍直接关联的人。
+  // 同时保留 normalizeNodeData 注入的 ariaRole/domAttributes（覆盖英文 "node" 角色描述）。
+  // 关联人中也排除被隐藏（含间接隐藏）的人物，避免读出不可见对象。
+  const visibleNodesWithAria = useMemo(
+    () =>
+      visibleNodes.map((n) => ({
+        ...n,
+        ariaLabel: buildNodeAriaLabelVisible(n.id, n.data, displaySettings, nodes, edges, invisibleNodeIds),
+      })),
+    [visibleNodes, displaySettings, nodes, edges, invisibleNodeIds]
+  );
+
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { fitView, setViewport: setRFViewport } = useReactFlow();
+  const reactFlow = useReactFlow();
+  const { fitView, setViewport: setRFViewport, zoomIn, zoomOut } = reactFlow;
+  // ReactFlow 内部 store：用于感知/切换「Toggle Interactivity」锁状态（不改按钮本身）
+  const rfStore = useStoreApi();
+  // 画布是否锁定：与 Controls 的锁按钮保持一致（nodesDraggable/nodesConnectable/elementsSelectable 全为 false 即锁定）
+  const isCanvasLocked = useStore(
+    (s) => !(s.nodesDraggable || s.nodesConnectable || s.elementsSelectable)
+  );
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showExportDataMenu, setShowExportDataMenu] = useState(false);
   // PNG 自定义清晰度
   const [pngQuality, setPngQuality] = useState(2);
   // 导出图片时显示全屏遮罩，遮住 wrapper 尺寸变化的视觉闪烁
   const [isExporting, setIsExporting] = useState(false);
+  // 画布容器尺寸（用于坐标系横线覆盖范围）
+  const [wrapperSize, setWrapperSize] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const el = reactFlowWrapper.current;
+    if (!el) return;
+    const update = () => setWrapperSize({ width: el.clientWidth, height: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   // 连线模式：自定义关系称谓输入
   const [customLabelDraft, setCustomLabelDraft] = useState('');
   // 连线模式：下拉菜单显隐
@@ -121,6 +179,14 @@ export default function Relationship() {
     setViewport(vp);
   }, [setViewport]);
 
+  // 锁定/解锁画布：与 Controls 锁按钮使用同一组内部状态
+  const toggleLock = useCallback(() => {
+    const s = rfStore.getState();
+    const interactive = s.nodesDraggable || s.nodesConnectable || s.elementsSelectable;
+    const next = !interactive;
+    rfStore.setState({ nodesDraggable: next, nodesConnectable: next, elementsSelectable: next });
+  }, [rfStore]);
+
   // Ctrl/Cmd + Z 撤销（在输入框内不拦截，保留原生撤销）
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -138,21 +204,108 @@ export default function Relationship() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // 方向键：画布锁定时选择相邻人物；Ctrl/Cmd+L：锁定/解锁画布
+  // （「Toggle Interactivity」锁按钮保持原样，此处仅新增键盘能力，并复用同一内部锁定状态）
+  useEffect(() => {
+    // 在给定方向上挑选「最正对且最近」的人物节点（基于画布坐标）
+    const selectAdjacent = (dir: 'up' | 'down' | 'left' | 'right') => {
+      const state = useRelationshipStore.getState();
+      const allNodes = state.nodes;
+      if (allNodes.length === 0) return;
+      // 当前人物：优先使用已选中的节点；否则从「自己」开始
+      const currentId =
+        state.selectedNodeId ?? allNodes.find((n) => n.data.isSelf)?.id;
+      const current = allNodes.find((n) => n.id === currentId);
+      if (!current) return;
+      const cx = current.position.x;
+      const cy = current.position.y;
+
+      let best: (typeof allNodes)[number] | null = null;
+      let bestScore = Infinity;
+      for (const n of allNodes) {
+        if (n.id === currentId) continue;
+        const dx = n.position.x - cx;
+        const dy = n.position.y - cy;
+        let ok = false;
+        let main = 0;
+        let cross = 0;
+        if (dir === 'up') { ok = dy < 0; main = -dy; cross = Math.abs(dx); }
+        else if (dir === 'down') { ok = dy > 0; main = dy; cross = Math.abs(dx); }
+        else if (dir === 'left') { ok = dx < 0; main = -dx; cross = Math.abs(dy); }
+        else { ok = dx > 0; main = dx; cross = Math.abs(dy); }
+        if (!ok) continue;
+        // 偏好「正对」且「近」的节点：横向偏差权重更高
+        const score = cross * 3 + main;
+        if (score < bestScore) { bestScore = score; best = n; }
+      }
+      if (!best) return;
+
+      // 同步选中：更新详情面板 + 高亮节点 + 居中显示（保持当前缩放，仅平移）
+      state.setSelectedNodeId(best.id);
+      reactFlow.setNodes((nds) => nds.map((n) => ({ ...n, selected: n.id === best!.id })));
+      const internal = reactFlow.getInternalNode(best.id);
+      const nodeW = internal?.measured?.width ?? 200;
+      const nodeH = internal?.measured?.height ?? 120;
+      const centerX = best.position.x + nodeW / 2;
+      const centerY = best.position.y + nodeH / 2;
+      const currentZoom = reactFlow.getViewport().zoom;
+      reactFlow.setCenter(centerX, centerY, { zoom: currentZoom, duration: 300 });
+    };
+
+    // 锁定/解锁画布：复用组件顶层的 toggleLock
+    const handler = (e: KeyboardEvent) => {
+      // 在输入框/文本域/下拉/可编辑区中不拦截，保留原生行为
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return;
+
+      // Ctrl/Cmd + L：锁定 / 解锁画布
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        toggleLock();
+        return;
+      }
+
+      // Ctrl/Cmd + ↑ / ↓：放大 / 缩小画布
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'ArrowUp') { e.preventDefault(); reactFlow.zoomIn({ duration: 200 }); return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); reactFlow.zoomOut({ duration: 200 }); return; }
+      }
+
+      // 仅当画布锁定时，方向键用于选择相邻人物（未锁定时保留 ReactFlow 默认微调位置）
+      const s = rfStore.getState();
+      const locked = !(s.nodesDraggable || s.nodesConnectable || s.elementsSelectable);
+      if (!locked) return;
+
+      let dir: 'up' | 'down' | 'left' | 'right' | null = null;
+      if (e.key === 'ArrowUp') dir = 'up';
+      else if (e.key === 'ArrowDown') dir = 'down';
+      else if (e.key === 'ArrowLeft') dir = 'left';
+      else if (e.key === 'ArrowRight') dir = 'right';
+      if (!dir) return;
+      e.preventDefault();
+      selectAdjacent(dir);
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [reactFlow, rfStore]);
+
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: any) => {
       // 连线模式下：点击节点建立关系，不打开详情面板
       if (connectionMode !== 'off') {
         const result = clickNodeInConnectMode(node.id);
         if (result.connected) {
-          setConnectToast(`已建立关系：${result.reason || ''}`);
+          setConnectToast(`${tt('已建立关系：')}${result.reason || ''}`);
           setTimeout(() => setConnectToast(null), 1800);
         } else if (result.reason && result.reason !== '取消选择') {
           // 静默
         } else if (result.reason === '取消选择') {
-          setConnectToast('已取消选择');
+          setConnectToast(tt('已取消选择'));
           setTimeout(() => setConnectToast(null), 1200);
         } else {
-          setConnectToast('已选择起点，再点击一个人物完成连线');
+          setConnectToast(tt('已选择起点，再点击一个人物完成连线'));
           setTimeout(() => setConnectToast(null), 1800);
         }
         return;
@@ -390,21 +543,21 @@ export default function Relationship() {
       try {
         const result = await parseXlsxFile(file);
         if (result.persons.length === 0) {
-          alert(`导入失败：未找到可用数据。\n${result.errors.join('\n')}`);
+          alert(`${tt('导入失败：未找到可用数据。')}\n${result.errors.join('\n')}`);
         } else {
           const added = importPersonsIncremental(result.persons);
-          let msg = `成功导入 ${added} 个独立人物（无关系）。`;
-          if (result.skipped > 0) msg += `\n跳过 ${result.skipped} 行无效数据。`;
-          if (result.errors.length > 0) msg += `\n\n详情：\n${result.errors.join('\n')}`;
+          let msg = `${tt('成功导入 ')}${added}${tt(' 个独立人物（无关系）。')}`;
+          if (result.skipped > 0) msg += `\n${tt('跳过 ')}${result.skipped}${tt(' 行无效数据。')}`;
+          if (result.errors.length > 0) msg += `\n\n${tt('详情：')}\n${result.errors.join('\n')}`;
           if (result.detectedCustomColumns.length > 0) {
-            msg += `\n\n检测到自定义列：${result.detectedCustomColumns.map((c) => c.label).join('、')}`;
+            msg += `\n\n${tt('检测到自定义列：')}${result.detectedCustomColumns.map((c) => c.label).join(tt('、'))}`;
           }
           alert(msg);
           setTimeout(() => fitView({ padding: 0.2 }), 100);
         }
       } catch (err) {
         console.error('xlsx 导入失败', err);
-        alert('xlsx 文件解析失败，请检查文件格式。');
+        alert(tt('xlsx 文件解析失败，请检查文件格式。'));
       }
       event.target.value = '';
       return;
@@ -451,12 +604,13 @@ export default function Relationship() {
       onPointerLeave={onPointerUp}
     >
       <ReactFlow
+        aria-label={tt('人际关系图谱画布，包含人物节点与亲属关系连线。按 Tab 可在人物间移动，按 Enter 查看详情。')}
         nodes={connectFirstNodeId
-          ? visibleNodes.map((n) => n.id === connectFirstNodeId
+          ? visibleNodesWithAria.map((n) => n.id === connectFirstNodeId
             ? { ...n, style: { ...n.style, boxShadow: '0 0 0 3px #2563eb, 0 4px 12px rgba(37,99,235,0.4)' } }
             : n)
-          : visibleNodes}
-        edges={visibleEdges}
+          : visibleNodesWithAria}
+        edges={visibleEdgesWithAria}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
@@ -464,6 +618,15 @@ export default function Relationship() {
         onPaneClick={onPaneClick}
         onEdgeClick={onEdgeClick}
         onMoveEnd={onMoveEnd}
+        onInit={() => {
+          // 平移层（.react-flow__pane）仅用于鼠标拖拽画布，对屏幕阅读器无意义。
+          // 它与节点层（.react-flow__nodes）是兄弟节点，将其隐藏不会影响人物节点被朗读。
+          const pane = reactFlowWrapper.current?.querySelector('.react-flow__pane');
+          if (pane) {
+            pane.setAttribute('aria-hidden', 'true');
+            pane.removeAttribute('aria-roledescription');
+          }
+        }}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         defaultEdgeOptions={{ style: { stroke: '#94a3b8', strokeWidth: 2 } }}
@@ -471,19 +634,59 @@ export default function Relationship() {
         minZoom={0.1}
       >
         <Background color="#ccc" gap={16} />
-        <Controls />
-        <MiniMap zoomable pannable />
+        <Controls showZoom={false} showFitView={false} showInteractive={false}>
+          <ControlButton
+            onClick={() => zoomIn({ duration: 200 })}
+            title={tt('放大')}
+            aria-label={tt('放大')}
+          >
+            <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+          </ControlButton>
+          <ControlButton
+            onClick={() => zoomOut({ duration: 200 })}
+            title={tt('缩小')}
+            aria-label={tt('缩小')}
+          >
+            <Minus className="w-3.5 h-3.5" aria-hidden="true" />
+          </ControlButton>
+          <ControlButton
+            onClick={() => fitView({ padding: 0.2 })}
+            title={tt('适配视图')}
+            aria-label={tt('适配视图')}
+          >
+            <Maximize className="w-3.5 h-3.5" aria-hidden="true" />
+          </ControlButton>
+          <ControlButton
+            onClick={toggleLock}
+            title={isCanvasLocked ? tt('解锁画布') : tt('锁定画布')}
+            aria-label={isCanvasLocked ? tt('解锁画布') : tt('锁定画布')}
+          >
+            {isCanvasLocked ? <Unlock className="w-3.5 h-3.5" aria-hidden="true" /> : <Lock className="w-3.5 h-3.5" aria-hidden="true" />}
+          </ControlButton>
+          <ControlButton
+            onClick={() => useRelationshipStore.getState().updateDisplaySettings({ showCoordinateSystem: !showCoordinateSystem })}
+            title={showCoordinateSystem ? tt('隐藏坐标系（按10年为单位显示横线）') : tt('显示坐标系（按10年为单位显示横线）')}
+            aria-label={showCoordinateSystem ? tt('隐藏坐标系（按10年为单位显示横线）') : tt('显示坐标系（按10年为单位显示横线）')}
+            className={showCoordinateSystem ? 'bg-blue-50 text-blue-600' : ''}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </ControlButton>
+        </Controls>
+        <MiniMap zoomable pannable aria-hidden="true" />
         
-        <Panel position="top-right" className="flex gap-2">
+        <Panel position="top-right" className="flex gap-2" role="toolbar" aria-label={tt('画布工具：撤销、整理布局、连线、导出、导入')}>
           <button
             onClick={() => undo()}
             disabled={undoStack.length === 0}
-            title={undoStack.length > 0 ? `撤销：${lastUndoLabel}` : '没有可撤销的操作'}
+            title={undoStack.length > 0 ? `${tt('撤销：')}${lastUndoLabel}` : tt('没有可撤销的操作')}
+            aria-label={undoStack.length > 0 ? `${tt('撤销：')}${lastUndoLabel}` : tt('没有可撤销的操作')}
             className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <Undo2 className="w-4 h-4" />
-            撤销
-            {undoStack.length > 0 && (
+            <Undo2 className="w-4 h-4" aria-hidden="true" />{tt('撤销')}{undoStack.length > 0 && (
               <span className="text-[10px] text-gray-400">({undoStack.length})</span>
             )}
           </button>
@@ -492,10 +695,9 @@ export default function Relationship() {
               layoutGraph();
               setTimeout(() => fitView({ padding: 0.2 }), 100);
             }}
+            aria-label={tt('整理布局：自动排布所有人物节点')}
             className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700"
-          >
-            整理布局
-          </button>
+          >{tt('整理布局')}</button>
           {/* 连线模式 */}
           <div className="relative">
             <button
@@ -506,32 +708,31 @@ export default function Relationship() {
                   ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
                   : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
               )}
-              title="连线模式：点击两个节点建立关系"
+              title={tt('连线模式：点击两个节点建立关系')}
+              aria-label={tt('连线模式：点击两个节点建立关系')}
             >
-              <Spline className="w-4 h-4" />
-              连线模式
-              {connectionMode !== 'off' && (
+              <Spline className="w-4 h-4" aria-hidden="true" />{tt('连线模式')}{connectionMode !== 'off' && (
                 <span className="text-[10px] bg-white/20 px-1 rounded">
-                  {connectionMode === 'auto' ? '自动' : connectionMode === 'parent-child' ? '父母子女' : connectionMode === 'spouse' ? '爱人' : (connectionCustomLabel || '其他')}
+                  {connectionMode === 'auto' ? tt('自动') : connectionMode === 'parent-child' ? tt('父母子女') : connectionMode === 'spouse' ? tt('爱人') : (connectionCustomLabel || tt('其他'))}
                 </span>
               )}
-              <ChevronDown className="w-3 h-3 opacity-70" />
+              <ChevronDown className="w-3 h-3 opacity-70" aria-hidden="true" />
             </button>
             {showConnectMenu && (
               <div className="absolute right-0 mt-1 w-56 bg-white border border-gray-200 rounded-md shadow-lg z-50 py-1">
-                <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-gray-400">选择连线模式</div>
+                <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-gray-400">{tt('选择连线模式')}</div>
                 {([
-                  { key: 'off', label: '关闭连线模式', desc: '正常点击查看详情' },
-                  { key: 'auto', label: '自动', desc: '年龄差>15 父母子女，否则爱人' },
-                  { key: 'parent-child', label: '父母子女', desc: 'A为长辈，B为晚辈' },
-                  { key: 'spouse', label: '爱人', desc: '不限年龄性别' },
+                  { key: 'off', label: tt('关闭连线模式'), desc: tt('正常点击查看详情') },
+                  { key: 'auto', label: tt('自动'), desc: tt('年龄差>15 父母子女，否则爱人') },
+                  { key: 'parent-child', label: tt('父母子女'), desc: tt('A为长辈，B为晚辈') },
+                  { key: 'spouse', label: tt('爱人'), desc: tt('不限年龄性别') },
                 ] as const).map((opt) => (
                   <button
                     key={opt.key}
                     onClick={() => {
                       setConnectionMode(opt.key);
                       setShowConnectMenu(false);
-                      setConnectToast(opt.key === 'off' ? '已退出连线模式' : `已进入「${opt.label}」连线模式，点击两个节点连线`);
+                      setConnectToast(opt.key === 'off' ? tt('已退出连线模式') : `${tt('已进入「')}${opt.label}${tt('」连线模式，点击两个节点连线')}`);
                       setTimeout(() => setConnectToast(null), 1800);
                     }}
                     className={clsx(
@@ -545,7 +746,7 @@ export default function Relationship() {
                 ))}
                 {/* 其他（填写） */}
                 <div className="border-t border-gray-100 px-3 py-2">
-                  <div className="text-[11px] font-medium text-gray-500 mb-1.5">其他（填写关系称谓）</div>
+                  <div className="text-[11px] font-medium text-gray-500 mb-1.5">{tt('其他（填写关系称谓）')}</div>
                   <div className="flex gap-1.5">
                     <input
                       type="text"
@@ -555,11 +756,11 @@ export default function Relationship() {
                         if (e.key === 'Enter' && customLabelDraft.trim()) {
                           setConnectionMode('custom', customLabelDraft.trim());
                           setShowConnectMenu(false);
-                          setConnectToast(`已进入「其他：${customLabelDraft.trim()}」连线模式`);
+                          setConnectToast(`${tt('已进入「其他：')}${customLabelDraft.trim()}${tt('」连线模式')}`);
                           setTimeout(() => setConnectToast(null), 1800);
                         }
                       }}
-                      placeholder="如：同学、同事、朋友"
+                      placeholder={tt('如：同学、同事、朋友')}
                       className="flex-1 min-w-0 px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                     <button
@@ -567,14 +768,12 @@ export default function Relationship() {
                         if (!customLabelDraft.trim()) return;
                         setConnectionMode('custom', customLabelDraft.trim());
                         setShowConnectMenu(false);
-                        setConnectToast(`已进入「其他：${customLabelDraft.trim()}」连线模式`);
+                        setConnectToast(`${tt('已进入「其他：')}${customLabelDraft.trim()}${tt('」连线模式')}`);
                         setTimeout(() => setConnectToast(null), 1800);
                       }}
                       disabled={!customLabelDraft.trim()}
                       className="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-                    >
-                      确定
-                    </button>
+                    >{tt('确定')}</button>
                   </div>
                 </div>
                 {connectionMode !== 'off' && (
@@ -583,14 +782,12 @@ export default function Relationship() {
                       onClick={() => {
                         setConnectionMode('off');
                         setShowConnectMenu(false);
-                        setConnectToast('已退出连线模式');
+                        setConnectToast(tt('已退出连线模式'));
                         setTimeout(() => setConnectToast(null), 1500);
                       }}
                       className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
                     >
-                      <X className="w-3.5 h-3.5" />
-                      退出连线模式
-                    </button>
+                      <X className="w-3.5 h-3.5" aria-hidden="true" />{tt('退出连线模式')}</button>
                   </div>
                 )}
               </div>
@@ -599,21 +796,22 @@ export default function Relationship() {
           <div className="relative">
             <button
               onClick={() => { setShowExportMenu(!showExportMenu); setShowExportDataMenu(false); }}
+              aria-label={tt('导出图片')}
+              aria-expanded={showExportMenu}
+              aria-haspopup="menu"
               className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700"
             >
-              <ImageIcon className="w-4 h-4" />
-              导出图片
-              <ChevronDown className="w-3 h-3 text-gray-500" />
+              <ImageIcon className="w-4 h-4" aria-hidden="true" />{tt('导出图片')}<ChevronDown className="w-3 h-3 text-gray-500" aria-hidden="true" />
             </button>
             {showExportMenu && (
               <div className="absolute right-0 mt-1 w-52 bg-white border border-gray-200 rounded-md shadow-lg z-50 py-1">
-                <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-gray-400">PNG 清晰度</div>
+                <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-gray-400">{tt('PNG 清晰度')}</div>
                 <div className="px-3 pb-2 space-y-1.5">
                   {[
-                    { label: '标清', value: 1, hint: '1x' },
-                    { label: '高清', value: 2, hint: '2x' },
-                    { label: '超清', value: 4, hint: '4x' },
-                    { label: '极清', value: 6, hint: '6x' },
+                    { label: tt('标清'), value: 1, hint: '1x' },
+                    { label: tt('高清'), value: 2, hint: '2x' },
+                    { label: tt('超清'), value: 4, hint: '4x' },
+                    { label: tt('极清'), value: 6, hint: '6x' },
                   ].map((opt) => (
                     <button
                       key={opt.value}
@@ -629,7 +827,7 @@ export default function Relationship() {
                   ))}
                   {/* 自定义清晰度输入 */}
                   <div className="flex items-center gap-1 pt-1 border-t border-gray-100">
-                    <span className="text-xs text-gray-500 shrink-0">自定义</span>
+                    <span className="text-xs text-gray-500 shrink-0">{tt('自定义')}</span>
                     <input
                       type="number"
                       min={1}
@@ -646,14 +844,12 @@ export default function Relationship() {
                     <button
                       onClick={() => handleExportImage('png', pngQuality)}
                       className="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
-                    >
-                      导出
-                    </button>
+                    >{tt('导出')}</button>
                   </div>
-                  <p className="text-[10px] text-gray-400 leading-tight">数值越大越清晰，文件也越大。建议 1-6，过大可能卡顿。</p>
+                  <p className="text-[10px] text-gray-400 leading-tight">{tt('数值越大越清晰，文件也越大。建议 1-6，过大可能卡顿。')}</p>
                 </div>
                 <div className="border-t border-gray-100">
-                  <button onClick={() => handleExportImage('svg')} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">SVG (矢量图)</button>
+                  <button onClick={() => handleExportImage('svg')} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{tt('SVG (矢量图)')}</button>
                 </div>
               </div>
             )}
@@ -661,61 +857,99 @@ export default function Relationship() {
           <div className="relative">
             <button
               onClick={() => { setShowExportDataMenu(!showExportDataMenu); setShowExportMenu(false); }}
+              aria-label={tt('导出数据')}
+              aria-expanded={showExportDataMenu}
+              aria-haspopup="menu"
               className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700"
             >
-              <Download className="w-4 h-4" />
-              导出数据
-              <ChevronDown className="w-3 h-3 text-gray-500" />
+              <Download className="w-4 h-4" aria-hidden="true" />{tt('导出数据')}<ChevronDown className="w-3 h-3 text-gray-500" aria-hidden="true" />
             </button>
             {showExportDataMenu && (
               <div className="absolute right-0 mt-1 w-40 bg-white border border-gray-200 rounded-md shadow-lg z-50 py-1">
-                <button onClick={() => handleExportData('json')} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">JSON (完整)</button>
-                <button onClick={() => handleExportData('xml')} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">XML (完整)</button>
-                <button onClick={() => handleExportData('csv')} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">CSV (仅人物+关系)</button>
+                <button onClick={() => handleExportData('json')} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{tt('JSON (完整)')}</button>
+                <button onClick={() => handleExportData('xml')} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{tt('XML (完整)')}</button>
+                <button onClick={() => handleExportData('csv')} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{tt('CSV (仅人物+关系)')}</button>
               </div>
             )}
           </div>
           <div className="relative">
             <label className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700 cursor-pointer">
-              <Upload className="w-4 h-4" />
-              导入数据
-              <input type="file" accept=".json,.xml,.xlsx" className="hidden" onChange={(e) => { handleImportData(e); }} />
+              <Upload className="w-4 h-4" aria-hidden="true" />{tt('导入数据')}<input type="file" accept=".json,.xml,.xlsx" className="hidden" aria-label={tt('导入数据：选择 JSON、XML 或 Excel 文件')} onChange={(e) => { handleImportData(e); }} />
             </label>
           </div>
           <button
             onClick={() => setShowHelpPage(true)}
             className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700"
-            title="打开帮助页面，下载 Excel 导入模板"
+            aria-label={tt('打开帮助页面：查看使用说明、下载 Excel 导入模板')}
+            title={tt('打开帮助页面，下载 Excel 导入模板')}
           >
-            <HelpCircle className="w-4 h-4" />
-            帮助
-          </button>
+            <HelpCircle className="w-4 h-4" aria-hidden="true" />{tt('帮助')}</button>
         </Panel>
       </ReactFlow>
 
+      {showCoordinateSystem && coordinateLines.length > 0 && wrapperSize.width > 0 && (
+        <svg
+          aria-hidden="true"
+          className="export-hide absolute inset-0 pointer-events-none"
+          width={wrapperSize.width}
+          height={wrapperSize.height}
+          style={{ zIndex: 0 }}
+        >
+          {coordinateLines.map((line, idx) => {
+            // 流坐标系 Y → 屏幕坐标 Y
+            const screenY = viewport.y + line.y * viewport.zoom;
+            // 跳出可视范围则不渲染（留少量缓冲）
+            if (screenY < -50 || screenY > wrapperSize.height + 50) return null;
+            return (
+              <g key={idx}>
+                <line
+                  x1={0}
+                  y1={screenY}
+                  x2={wrapperSize.width}
+                  y2={screenY}
+                  stroke="#9ca3af"
+                  strokeOpacity={0.3}
+                  strokeWidth={1}
+                />
+                <text
+                  x={6}
+                  y={screenY - 3}
+                  fill="#6b7280"
+                  fillOpacity={0.6}
+                  fontSize={11}
+                  style={{ userSelect: 'none' }}
+                >
+                  {line.year}{tt('年')}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      )}
+
       {showCanvasHint && !selectedNodeId && connectionMode === 'off' && (
-        <div className="export-hide absolute top-4 left-4 bg-white/80 backdrop-blur-sm px-4 py-3 rounded-lg border border-gray-200 shadow-sm text-sm text-gray-600 pointer-events-none z-10">
-          点击节点查看详情并添加亲属
+        <div className="export-hide absolute top-4 left-4 bg-white/80 backdrop-blur-sm px-4 py-3 rounded-lg border border-gray-200 shadow-sm text-sm text-gray-600 pointer-events-none z-10" aria-hidden="true">
+          {isCanvasLocked
+            ? tt('画布已锁定：用方向键选择旁边的人物，Ctrl/Cmd+L 解锁，Ctrl/Cmd+↑/↓ 缩放')
+            : tt('点击节点查看详情并添加亲属')}
         </div>
       )}
 
       {/* 连线模式状态条 */}
       {showCanvasHint && connectionMode !== 'off' && (
-        <div className="export-hide absolute top-4 left-4 bg-blue-600/95 backdrop-blur-sm px-4 py-3 rounded-lg border border-blue-500 shadow-lg text-sm text-white z-10 pointer-events-none">
+        <div className="export-hide absolute top-4 left-4 bg-blue-600/95 backdrop-blur-sm px-4 py-3 rounded-lg border border-blue-500 shadow-lg text-sm text-white z-10 pointer-events-none" aria-hidden="true">
           <div className="flex items-center gap-2 font-medium">
-            <Spline className="w-4 h-4" />
-            连线模式：
-            {connectionMode === 'auto' ? '自动' : connectionMode === 'parent-child' ? '父母子女' : connectionMode === 'spouse' ? '爱人' : `其他（${connectionCustomLabel}）`}
+            <Spline className="w-4 h-4" aria-hidden="true" />{tt('连线模式：')}{connectionMode === 'auto' ? tt('自动') : connectionMode === 'parent-child' ? tt('父母子女') : connectionMode === 'spouse' ? tt('爱人') : `${tt('其他（')}${connectionCustomLabel}${tt('）')}`}
           </div>
           <div className="text-[11px] text-blue-100 mt-0.5">
-            {connectFirstNodeId ? '已选择起点，再点击一个人物完成连线（点击空白取消）' : '点击第一个人物作为起点'}
+            {connectFirstNodeId ? tt('已选择起点，再点击一个人物完成连线（点击空白取消）') : tt('点击第一个人物作为起点')}
           </div>
         </div>
       )}
 
       {/* 连线模式 toast 提示 */}
       {connectToast && (
-        <div className="export-hide fixed top-20 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white px-4 py-2 rounded-lg shadow-lg text-sm z-[60] pointer-events-none">
+        <div className="export-hide fixed top-20 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white px-4 py-2 rounded-lg shadow-lg text-sm z-[60] pointer-events-none" aria-hidden="true">
           {connectToast}
         </div>
       )}
@@ -723,10 +957,10 @@ export default function Relationship() {
       {/* 连线模式：高亮起点节点（通过节点样式无法直接控制，这里用提示） */}
 
       {isExporting && (
-        <div className="export-hide fixed inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center z-[9999]">
+        <div className="export-hide fixed inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center z-[9999]" aria-hidden="true">
           <div className="flex flex-col items-center gap-3">
             <div className="w-10 h-10 border-3 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
-            <div className="text-sm text-gray-600">正在生成图片，请稍候...</div>
+            <div className="text-sm text-gray-600">{tt('正在生成图片，请稍候...')}</div>
           </div>
         </div>
       )}

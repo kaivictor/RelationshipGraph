@@ -1,23 +1,28 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useId } from 'react';
 import { useRelationshipStore, PersonData, Gender, toArrayValue, computeInvisibleNodes } from '../store/useRelationshipStore';
 import { X, Plus, Trash2, Save, UserCheck, Heart, Upload, Loader2, Eye, EyeOff } from 'lucide-react';
 import { compressImageToBase64 } from '../utils/imageCompress';
 import { CollapsibleSection } from './CollapsibleSection';
 import clsx from 'clsx';
+import { tt, useLang } from '../i18n';
 
 // 字段标签 + 显隐切换
 function FieldLabel({
   label,
+  htmlFor,
   visible,
   onToggleVisible,
+  toggleLabel,
 }: {
   label: string;
+  htmlFor?: string;
   visible?: boolean;
   onToggleVisible?: () => void;
+  toggleLabel?: string;
 }) {
   return (
     <div className="flex items-center justify-between mb-1">
-      <label className="text-xs font-medium text-gray-500">{label}</label>
+      <label htmlFor={htmlFor} className="text-xs font-medium text-gray-500">{label}</label>
       {onToggleVisible !== undefined && visible !== undefined && (
         <button
           type="button"
@@ -26,9 +31,10 @@ function FieldLabel({
             'p-0.5 transition-colors',
             visible ? 'text-blue-500 hover:text-blue-700' : 'text-gray-300 hover:text-blue-500'
           )}
-          title={visible ? '在节点上显示此字段' : '在节点上隐藏此字段'}
+          aria-label={toggleLabel ?? (visible ? `${tt('在节点上显示字段：')}${label}` : `${tt('在节点上隐藏字段：')}${label}`)}
+          title={visible ? tt('在节点上显示此字段') : tt('在节点上隐藏此字段')}
         >
-          {visible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+          {visible ? <Eye className="w-3 h-3" aria-hidden="true" /> : <EyeOff className="w-3 h-3" aria-hidden="true" />}
         </button>
       )}
     </div>
@@ -52,13 +58,15 @@ function MultiField({
   onToggleVisible?: () => void;
 }) {
   const items = values.length > 0 ? values : [''];
+  const idBase = useId();
   return (
     <div>
-      <FieldLabel label={label} visible={visible} onToggleVisible={onToggleVisible} />
+      <FieldLabel label={label} htmlFor={`${idBase}-0`} visible={visible} onToggleVisible={onToggleVisible} />
       <div className="space-y-1">
         {items.map((v, i) => (
           <div key={i} className="flex gap-1">
             <input
+              id={i === 0 ? `${idBase}-0` : undefined}
               type="text"
               value={v}
               onChange={(e) => {
@@ -67,6 +75,7 @@ function MultiField({
                 onChange(next);
               }}
               placeholder={placeholder}
+              aria-label={items.length > 1 ? `${label} ${tt('第')}${i + 1}${tt(' 个值')}` : undefined}
               className="flex-1 min-w-0 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             {items.length > 1 && (
@@ -77,9 +86,10 @@ function MultiField({
                   onChange(next.length > 0 ? next : ['']);
                 }}
                 className="px-2 text-gray-300 hover:text-red-500 transition-colors"
-                title="删除此值"
+                aria-label={`${tt('删除')}${label}${tt('第')}${i + 1}${tt(' 个值')}`}
+                title={tt('删除此值')}
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
             )}
           </div>
@@ -90,9 +100,7 @@ function MultiField({
         onClick={() => onChange([...items, ''])}
         className="mt-1 flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700"
       >
-        <Plus className="w-3 h-3" />
-        添加
-      </button>
+        <Plus className="w-3 h-3" aria-hidden="true" />{tt('添加')}</button>
     </div>
   );
 }
@@ -115,10 +123,12 @@ function Field({
   visible?: boolean;
   onToggleVisible?: () => void;
 }) {
+  const id = useId();
   return (
     <div>
-      <FieldLabel label={label} visible={visible} onToggleVisible={onToggleVisible} />
+      <FieldLabel label={label} htmlFor={id} visible={visible} onToggleVisible={onToggleVisible} />
       <input
+        id={id}
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -130,6 +140,7 @@ function Field({
 }
 
 export function PersonDetails() {
+  const lang = useLang();
   const { nodes, edges, selectedNodeId, setSelectedNodeId, updatePerson, updatePersonLive, deletePerson, addRelative, connectExisting, setAsSelf, getDescendantsForCascade, setCategoryFold, hiddenNodeIds, hidePerson } =
     useRelationshipStore();
   const customFields = useRelationshipStore((s) => s.displaySettings.customFields);
@@ -156,6 +167,10 @@ export function PersonDetails() {
   const [newAttrValue, setNewAttrValue] = useState('');
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [expandOtherFold, setExpandOtherFold] = useState(false);
+  // "全部"按钮连续点击计数：第二次点击触发强制隐藏。必须在组件顶层调用（Rules of Hooks）。
+  const allClickCountRef = useRef<Record<string, number>>({ __nodeId: '' });
+  // 第一次点击"全部"被拦截的类别集合（橙色高亮，暗示可再次点击强制执行）
+  const [interceptedCategories, setInterceptedCategories] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (selectedNode) {
@@ -186,7 +201,7 @@ export function PersonDetails() {
       liveUpdate({avatar: base64 });
     } catch (err) {
       console.error('头像压缩失败', err);
-      alert('图片处理失败，请更换图片或填写 URL。');
+      alert(tt('图片处理失败，请更换图片或填写 URL。'));
     } finally {
       setIsUploadingAvatar(false);
       // 清空 input，便于重复选择同一文件
@@ -227,16 +242,16 @@ export function PersonDetails() {
     const cascadeIds = getDescendantsForCascade(selectedNode.id);
     if (cascadeIds.length > 0) {
       const names = cascadeIds
-        .map((cid) => nodes.find((n) => n.id === cid)?.data.name || '未命名')
+        .map((cid) => nodes.find((n) => n.id === cid)?.data.name || tt('未命名'))
         .slice(0, 5)
         .join('、');
-      const more = cascadeIds.length > 5 ? ` 等 ${cascadeIds.length} 人` : '';
+      const more = cascadeIds.length > 5 ? ` ${tt('等')} ${cascadeIds.length} ${tt('人')}` : '';
       const ok = confirm(
-        `是否一并删除此人的晚辈（${names}${more}）？\n\n点击「确定」将一并删除这些仅通过此人连接的晚辈；\n点击「取消」仅删除此人，保留晚辈（它们将失去这一父/母线）。`
+        `${tt('是否一并删除此人的晚辈（')}${names}${more}${tt('）？')}\n\n${tt('点击「确定」将一并删除这些仅通过此人连接的晚辈；')}\n${tt('点击「取消」仅删除此人，保留晚辈（它们将失去这一父/母线）。')}`
       );
       deletePerson(selectedNode.id, ok);
     } else {
-      if (confirm(`确定删除「${formData.name || '此人'}」吗？`)) {
+      if (confirm(`${tt('确定删除「')}${formData.name || tt('此人')}${tt('」吗？')}`)) {
         deletePerson(selectedNode.id, false);
       }
     }
@@ -252,13 +267,13 @@ export function PersonDetails() {
     if (useExistingPerson) {
       if (!existingPersonId) return;
       if (relativeType === 'custom') {
-        connectExisting(selectedNode.id, existingPersonId, 'custom', customRelLabel.trim() || '自定义');
+        connectExisting(selectedNode.id, existingPersonId, 'custom', customRelLabel.trim() || tt('自定义'));
       } else {
         connectExisting(selectedNode.id, existingPersonId, relativeType);
       }
     } else {
       if (relativeType === 'custom') {
-        addRelative(selectedNode.id, 'custom', newRelativeData, customRelLabel.trim() || '自定义');
+        addRelative(selectedNode.id, 'custom', newRelativeData, customRelLabel.trim() || tt('自定义'));
       } else {
         addRelative(selectedNode.id, relativeType, newRelativeData);
       }
@@ -335,51 +350,53 @@ export function PersonDetails() {
 
   return (
     <div
+      role="region"
+      aria-label={`${tt('人物详细信息面板：')}${formData.name || tt('未命名')}`}
       className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-50 nodrag nopan nowheel"
     >
       <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-gray-50">
-        <h2 className="font-semibold text-gray-800">详细信息</h2>
+        <h2 className="font-semibold text-gray-800">{tt('详细信息')}</h2>
         <div className="flex items-center gap-2">
           <button
             onClick={handleSave}
             className="flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded-md text-xs font-medium hover:bg-blue-700 transition-colors"
-            title="确认编辑：保存撤销快照并重新计算称谓"
+            aria-label={tt('确认编辑：保存撤销快照并重新计算称谓')}
+            title={tt('确认编辑：保存撤销快照并重新计算称谓')}
           >
-            <Save className="w-3.5 h-3.5" />
-            确认
-          </button>
+            <Save className="w-3.5 h-3.5" aria-hidden="true" />{tt('确认')}</button>
           <button
             onClick={() => setSelectedNodeId(null)}
             className="p-1 hover:bg-gray-200 rounded-full text-gray-500"
-            title="返回全局设置"
+            aria-label={tt('关闭详细信息面板，返回全局设置')}
+            title={tt('返回全局设置')}
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
       </div>
 
       <div className="p-4 overflow-y-auto flex-1">
-        <CollapsibleSection title="基本信息" defaultOpen={true} className="!mt-0 !pt-0 !border-t-0" storageKey="details:basic">
+        <CollapsibleSection title={tt('基本信息')} defaultOpen={true} className="!mt-0 !pt-0 !border-t-0" storageKey="details:basic">
         <div className="space-y-4">
           <Field
-            label="姓名拼音"
+            label={tt('姓名拼音')}
             value={formData.namePinyin || ''}
             onChange={(v) => liveUpdate({namePinyin: v })}
-            placeholder="如：Zhang San"
+            placeholder={tt('如：Zhang San')}
             visible={getFieldVisible('namePinyin', displaySettings.showNamePinyin)}
             onToggleVisible={() => toggleFieldVisible('namePinyin', displaySettings.showNamePinyin)}
           />
           <Field
-            label="姓名"
+            label={tt('姓名')}
             value={formData.name}
             onChange={(v) => liveUpdate({name: v })}
           />
 
           <Field
-            label="曾用名（多个用逗号分隔）"
+            label={tt('曾用名（多个用逗号分隔）')}
             value={(toArrayValue(formData.formerName) || []).join('，')}
             onChange={(v) => liveUpdate({formerName: v ? v.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined })}
-            placeholder="如：旧张三，旧李四"
+            placeholder={tt('如：旧张三，旧李四')}
             visible={getFieldVisible('formerName', displaySettings.showFormerName)}
             onToggleVisible={() => toggleFieldVisible('formerName', displaySettings.showFormerName)}
           />
@@ -387,12 +404,10 @@ export function PersonDetails() {
           <div>
             <div className="flex items-center justify-between mb-1">
               <div className="flex items-center gap-1">
-                <label className="text-xs font-medium text-gray-500">
-                  称谓
+                <label htmlFor="rel-relationship" className="text-xs font-medium text-gray-500">
+                  {tt('称谓')}
                   {formData.relationshipOverridden && (
-                    <span className="ml-1 text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
-                      已手动设置
-                    </span>
+                    <span className="ml-1 text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">{tt('已手动设置')}</span>
                   )}
                 </label>
                 <button
@@ -402,9 +417,10 @@ export function PersonDetails() {
                     'p-0.5 transition-colors',
                     getFieldVisible('relationship', displaySettings.showRelationship) ? 'text-blue-500 hover:text-blue-700' : 'text-gray-300 hover:text-blue-500'
                   )}
-                  title={getFieldVisible('relationship', displaySettings.showRelationship) ? '在节点上显示' : '在节点上隐藏'}
+                  aria-label={getFieldVisible('relationship', displaySettings.showRelationship) ? `${tt('在节点上显示字段：')}${tt('称谓')}` : `${tt('在节点上隐藏字段：')}${tt('称谓')}`}
+                  title={getFieldVisible('relationship', displaySettings.showRelationship) ? tt('在节点上显示') : tt('在节点上隐藏')}
                 >
-                  {getFieldVisible('relationship', displaySettings.showRelationship) ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                  {getFieldVisible('relationship', displaySettings.showRelationship) ? <Eye className="w-3 h-3" aria-hidden="true" /> : <EyeOff className="w-3 h-3" aria-hidden="true" />}
                 </button>
               </div>
               {formData.relationshipOverridden && (
@@ -421,12 +437,11 @@ export function PersonDetails() {
                     }, 50);
                   }}
                   className="text-[10px] text-blue-600 hover:text-blue-700"
-                >
-                  恢复自动计算
-                </button>
+                >{tt('恢复自动计算')}</button>
               )}
             </div>
             <input
+              id="rel-relationship"
               type="text"
               value={formData.relationship}
               onChange={(e) => {
@@ -435,27 +450,30 @@ export function PersonDetails() {
                 liveUpdate({relationship: val, relationshipOverridden: true });
               }}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="系统自动计算，可手动修改"
+              placeholder={tt('系统自动计算，可手动修改')}
             />
           </div>
 
           <Field
-            label="称谓俗称（多个用逗号分隔）"
+            label={tt('称谓俗称（多个用逗号分隔）')}
             value={(toArrayValue(formData.popularName) || []).join('，')}
             onChange={(v) => liveUpdate({popularName: v ? v.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined })}
-            placeholder="如：小三"
+            placeholder={tt('如：小三')}
             visible={getFieldVisible('popularName', displaySettings.showPopularName)}
             onToggleVisible={() => toggleFieldVisible('popularName', displaySettings.showPopularName)}
           />
 
           <div>
             <FieldLabel
-              label="出生年月"
+              label={tt('出生年月')}
+              htmlFor="rel-birthDate"
               visible={getFieldVisible('birthDate', true)}
               onToggleVisible={() => toggleFieldVisible('birthDate', true)}
             />
             <input
+              id="rel-birthDate"
               type="month"
+              lang={lang}
               value={formData.birthDate}
               onChange={(e) => liveUpdate({birthDate: e.target.value })}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -463,23 +481,24 @@ export function PersonDetails() {
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">性别</label>
+            <label htmlFor="rel-gender" className="block text-xs font-medium text-gray-500 mb-1">{tt('性别')}</label>
             <select
+              id="rel-gender"
               value={formData.gender}
               onChange={(e) => liveUpdate({gender: e.target.value as Gender })}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="unknown">未知</option>
-              <option value="male">男</option>
-              <option value="female">女</option>
+              <option value="unknown">{tt('未知')}</option>
+              <option value="male">{tt('男')}</option>
+              <option value="female">{tt('女')}</option>
             </select>
           </div>
 
           <Field
-            label="文化程度"
+            label={tt('文化程度')}
             value={formData.education || ''}
             onChange={(v) => liveUpdate({education: v })}
-            placeholder="如：本科"
+            placeholder={tt('如：本科')}
             visible={getFieldVisible('education', displaySettings.showEducation)}
             onToggleVisible={() => toggleFieldVisible('education', displaySettings.showEducation)}
           />
@@ -487,7 +506,7 @@ export function PersonDetails() {
           {/* 头像：支持上传图片（自动压缩到 300KB 左右转 base64）或填写 URL */}
           <div>
             <FieldLabel
-              label="头像"
+              label={tt('头像')}
               visible={getFieldVisible('avatar', displaySettings.showAvatar)}
               onToggleVisible={() => toggleFieldVisible('avatar', displaySettings.showAvatar)}
             />
@@ -496,32 +515,33 @@ export function PersonDetails() {
                 {avatarPreview ? (
                   <img src={avatarPreview} alt="头像预览" className="w-full h-full object-cover" />
                 ) : (
-                  <span className="text-[10px] text-gray-400">无</span>
+                  <span className="text-[10px] text-gray-400">{tt('无')}</span>
                 )}
               </div>
               <div className="flex-1 min-w-0 space-y-1.5">
                 <label className="flex items-center justify-center gap-1.5 border border-dashed border-gray-300 text-gray-600 px-3 py-1.5 rounded-md text-xs hover:border-blue-500 hover:text-blue-600 transition-colors cursor-pointer">
                   {isUploadingAvatar ? (
                     <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
                       压缩中...
                     </>
                   ) : (
                     <>
-                      <Upload className="w-3.5 h-3.5" />
-                      上传图片
-                    </>
+                      <Upload className="w-3.5 h-3.5" aria-hidden="true" />{tt('上传图片')}</>
                   )}
                   <input
                     type="file"
                     accept="image/*"
                     className="hidden"
+                    aria-label={tt('上传头像图片')}
                     onChange={handleAvatarUpload}
                     disabled={isUploadingAvatar}
                   />
                 </label>
                 <input
+                  id="rel-avatar-url"
                   type="text"
+                  aria-label={tt('头像图片 URL')}
                   value={(() => {
                     const av = formData.avatar || '';
                     // base64 或超长字符串不在 URL 输入框显示
@@ -529,7 +549,7 @@ export function PersonDetails() {
                     return av;
                   })()}
                   onChange={(e) => liveUpdate({avatar: e.target.value })}
-                  placeholder="或填写图片 URL"
+                  placeholder={tt('或填写图片 URL')}
                   className="w-full px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
@@ -538,7 +558,7 @@ export function PersonDetails() {
         </div>
         </CollapsibleSection>
 
-        <CollapsibleSection title="联系方式" defaultOpen={false} storageKey="details:contact">
+        <CollapsibleSection title={tt('联系方式')} defaultOpen={false} storageKey="details:contact">
         <div className="space-y-4">
           {([
             { key: 'phone', label: '手机号', placeholder: '如：13800138000', global: displaySettings.showPhone },
@@ -570,11 +590,11 @@ export function PersonDetails() {
         </CollapsibleSection>
 
         {/* 自定义属性（默认隐藏） */}
-        <CollapsibleSection title="自定义属性" defaultOpen={false} storageKey="details:custom">
+        <CollapsibleSection title={tt('自定义属性')} defaultOpen={false} storageKey="details:custom">
           {/* 全局自定义属性 */}
           {customFields.length > 0 && (
             <div className="mb-3">
-              <h3 className="font-medium text-gray-800 text-sm mb-2">全局自定义属性</h3>
+              <h3 className="font-medium text-gray-800 text-sm mb-2">{tt('全局自定义属性')}</h3>
               <div className="space-y-2">
                 {customFields.map((cf) => (
                   <div key={cf.id}>
@@ -591,10 +611,8 @@ export function PersonDetails() {
 
           {/* 个人自定义属性 */}
           <div>
-            <h3 className="font-medium text-gray-800 text-sm mb-2">个人自定义属性</h3>
-            <p className="text-[10px] text-gray-400 mb-2">
-              仅对此人生效。若与全局自定义属性同名，则全局优先。
-            </p>
+            <h3 className="font-medium text-gray-800 text-sm mb-2">{tt('个人自定义属性')}</h3>
+            <p className="text-[10px] text-gray-400 mb-2">{tt('仅对此人生效。若与全局自定义属性同名，则全局优先。')}</p>
             <div className="space-y-2">
               {personalAttrs.map((attr, index) => {
                 const overridden = isOverriddenByGlobal(attr.key);
@@ -605,15 +623,17 @@ export function PersonDetails() {
                       type="text"
                       value={attr.key}
                       disabled
+                      aria-label={`${tt('个人属性名：')}${attr.key}`}
                       className="w-20 shrink-0 px-2 py-1.5 border border-gray-200 bg-gray-50 rounded text-xs text-gray-500 cursor-not-allowed"
-                      title={overridden ? '被全局同名属性覆盖' : undefined}
+                      title={overridden ? tt('被全局同名属性覆盖') : undefined}
                     />
                     <input
                       type="text"
                       value={attr.value}
                       onChange={(e) => handleUpdatePersonalAttr(index, e.target.value)}
-                      placeholder="值"
+                      placeholder={tt('值')}
                       disabled={overridden}
+                      aria-label={`${tt('个人属性')}${attr.key}${tt('的值')}`}
                       className="flex-1 min-w-0 px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50"
                     />
                     <button
@@ -622,16 +642,18 @@ export function PersonDetails() {
                         'p-1.5 transition-colors shrink-0',
                         isHidden ? 'text-gray-400 hover:text-blue-500' : 'text-blue-500 hover:text-blue-700'
                       )}
-                      title={isHidden ? '在节点上显示此属性' : '在节点上隐藏此属性'}
+                      aria-label={isHidden ? `${tt('在节点上显示属性：')}${attr.key}` : `${tt('在节点上隐藏属性：')}${attr.key}`}
+                      title={isHidden ? tt('在节点上显示此属性') : tt('在节点上隐藏此属性')}
                     >
-                      {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      {isHidden ? <EyeOff className="w-3.5 h-3.5" aria-hidden="true" /> : <Eye className="w-3.5 h-3.5" aria-hidden="true" />}
                     </button>
                     <button
                       onClick={() => handleRemovePersonalAttr(index)}
                       className="p-1.5 text-gray-300 hover:text-red-500 transition-colors shrink-0"
-                      title="删除"
+                      aria-label={`${tt('删除个人属性：')}${attr.key}`}
+                      title={tt('删除')}
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                     </button>
                   </div>
                 );
@@ -641,10 +663,9 @@ export function PersonDetails() {
                 <button
                   onClick={() => setIsAddingPersonalAttr(true)}
                   className="w-full flex items-center justify-center gap-1 border border-dashed border-gray-300 text-gray-500 px-3 py-1.5 rounded text-xs hover:border-blue-500 hover:text-blue-600 transition-colors"
+                  aria-label={tt('添加个人自定义属性')}
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  添加个人属性
-                </button>
+                  <Plus className="w-3.5 h-3.5" aria-hidden="true" />{tt('添加个人属性')}</button>
               ) : (
                 <div className="flex gap-1">
                   <input
@@ -660,7 +681,8 @@ export function PersonDetails() {
                         setNewAttrValue('');
                       }
                     }}
-                    placeholder="属性名"
+                    placeholder={tt('属性名')}
+                    aria-label={tt('新个人属性名')}
                     className="w-20 shrink-0 px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <input
@@ -675,26 +697,25 @@ export function PersonDetails() {
                         setNewAttrValue('');
                       }
                     }}
-                    placeholder="属性值"
+                    placeholder={tt('属性值')}
+                    aria-label={tt('新个人属性值')}
                     className="flex-1 min-w-0 px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <button
                     onClick={handleAddPersonalAttr}
                     disabled={!newAttrKey.trim()}
+                    aria-label={tt('确认添加个人属性')}
                     className="px-2 py-1.5 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50 shrink-0"
-                  >
-                    确定
-                  </button>
+                  >{tt('确定')}</button>
                   <button
                     onClick={() => {
                       setIsAddingPersonalAttr(false);
                       setNewAttrKey('');
                       setNewAttrValue('');
                     }}
+                    aria-label={tt('取消添加个人属性')}
                     className="px-2 py-1.5 bg-white border border-gray-300 text-gray-700 rounded text-xs hover:bg-gray-50 shrink-0"
-                  >
-                    取消
-                  </button>
+                  >{tt('取消')}</button>
                 </div>
               )}
             </div>
@@ -702,82 +723,79 @@ export function PersonDetails() {
         </CollapsibleSection>
 
         {/* 添加关系（默认隐藏） */}
-        <CollapsibleSection title="添加关系" defaultOpen={false} storageKey="details:addRel">
+        <CollapsibleSection title={tt('添加关系')} defaultOpen={false} storageKey="details:addRel">
         <div>
           {!isAddingRelative ? (
             <button
               onClick={() => setIsAddingRelative(true)}
+              aria-label={tt('添加新关系：选择关系类型并新建或从现有人物中关联')}
               className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-gray-300 text-gray-600 px-4 py-3 rounded-lg hover:border-blue-500 hover:text-blue-600 transition-colors text-sm font-medium"
             >
-              <Plus className="w-4 h-4" />
-              添加新关系
-            </button>
+              <Plus className="w-4 h-4" aria-hidden="true" />{tt('添加新关系')}</button>
           ) : (
             <div className="space-y-4 bg-gray-50 p-4 rounded-lg border border-gray-200">
               <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">关系类型</label>
+                <label htmlFor="rel-type" className="block text-xs font-medium text-gray-500 mb-1">{tt('关系类型')}</label>
                 <select
+                  id="rel-type"
                   value={relativeType}
                   onChange={handleRelativeTypeChange}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="parent">父母</option>
-                  <option value="child">儿女</option>
-                  <option value="spouse">爱人</option>
-                  <option value="custom">自定义（同学、同事、朋友等）</option>
+                  <option value="parent">{tt('父母')}</option>
+                  <option value="child">{tt('儿女')}</option>
+                  <option value="spouse">{tt('爱人')}</option>
+                  <option value="custom">{tt('自定义（同学、同事、朋友等）')}</option>
                 </select>
                 {relativeType === 'parent' && (
-                  <p className="text-[10px] text-gray-400 mt-1">系统会根据性别推断父亲/母亲。</p>
+                  <p className="text-[10px] text-gray-400 mt-1">{tt('系统会根据性别推断父亲/母亲。')}</p>
                 )}
                 {relativeType === 'child' && (
-                  <p className="text-[10px] text-gray-400 mt-1">系统会根据性别推断儿子/女儿。</p>
+                  <p className="text-[10px] text-gray-400 mt-1">{tt('系统会根据性别推断儿子/女儿。')}</p>
                 )}
               </div>
 
               {relativeType === 'custom' && (
                 <Field
-                  label="关系称谓"
+                  label={tt('关系称谓')}
                   value={customRelLabel}
                   onChange={setCustomRelLabel}
-                  placeholder="如：同学、同事、朋友"
+                  placeholder={tt('如：同学、同事、朋友')}
                 />
               )}
 
               {/* 新建人物 / 从现有人物添加 切换 */}
-              <div className="flex gap-1 bg-white border border-gray-300 rounded-md p-0.5">
+              <div className="flex gap-1 bg-white border border-gray-300 rounded-md p-0.5" role="group" aria-label={tt('添加方式')}>
                 <button
                   type="button"
                   onClick={() => setUseExistingPerson(false)}
+                  aria-pressed={!useExistingPerson}
                   className={
                     'flex-1 px-3 py-1.5 rounded text-xs font-medium transition-colors ' +
                     (!useExistingPerson ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50')
                   }
-                >
-                  新建人物
-                </button>
+                >{tt('新建人物')}</button>
                 <button
                   type="button"
                   onClick={() => setUseExistingPerson(true)}
+                  aria-pressed={useExistingPerson}
                   className={
                     'flex-1 px-3 py-1.5 rounded text-xs font-medium transition-colors ' +
                     (useExistingPerson ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50')
                   }
-                >
-                  从现有人物添加
-                </button>
+                >{tt('从现有人物添加')}</button>
               </div>
 
               {useExistingPerson ? (
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">
-                    选择人物（已排除当前人物）
-                  </label>
+                  <label htmlFor="rel-existing" className="block text-xs font-medium text-gray-500 mb-1">{tt('选择人物（已排除当前人物）')}</label>
                   <select
+                    id="rel-existing"
                     value={existingPersonId}
                     onChange={(e) => setExistingPersonId(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    <option value="">请选择…</option>
+                    <option value="">{tt('请选择…')}</option>
                     {nodes
                       .filter((n) => n.id !== selectedNode.id)
                       .map((n) => (
@@ -794,31 +812,34 @@ export function PersonDetails() {
               ) : (
                 <>
                   <Field
-                    label="姓名"
+                    label={tt('姓名')}
                     value={newRelativeData.name}
                     onChange={(v) => setNewRelativeData({ ...newRelativeData, name: v })}
-                    placeholder="例如：张三"
+                    placeholder={tt('例如：张三')}
                   />
 
                   <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">性别</label>
+                    <label htmlFor="rel-new-gender" className="block text-xs font-medium text-gray-500 mb-1">{tt('性别')}</label>
                     <select
+                      id="rel-new-gender"
                       value={newRelativeData.gender}
                       onChange={(e) =>
                         setNewRelativeData({ ...newRelativeData, gender: e.target.value as Gender })
                       }
                       className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
-                      <option value="unknown">未知</option>
-                      <option value="male">男</option>
-                      <option value="female">女</option>
+                      <option value="unknown">{tt('未知')}</option>
+                      <option value="male">{tt('男')}</option>
+                      <option value="female">{tt('女')}</option>
                     </select>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">出生年月</label>
+                    <label htmlFor="rel-new-birth" className="block text-xs font-medium text-gray-500 mb-1">{tt('出生年月')}</label>
                     <input
+                      id="rel-new-birth"
                       type="month"
+                      lang={lang}
                       value={newRelativeData.birthDate}
                       onChange={(e) =>
                         setNewRelativeData({ ...newRelativeData, birthDate: e.target.value })
@@ -837,16 +858,14 @@ export function PersonDetails() {
                       ? !existingPersonId || (relativeType === 'custom' && !customRelLabel.trim())
                       : !newRelativeData.name || (relativeType === 'custom' && !customRelLabel.trim())
                   }
+                  aria-label={tt('确认添加关系')}
                   className="flex-1 bg-green-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  确认添加
-                </button>
+                >{tt('确认添加')}</button>
                 <button
                   onClick={() => setIsAddingRelative(false)}
+                  aria-label={tt('取消添加关系')}
                   className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
-                >
-                  取消
-                </button>
+                >{tt('取消')}</button>
               </div>
             </div>
           )}
@@ -858,6 +877,7 @@ export function PersonDetails() {
           if (!selectedNode) return null;
           const nodeId = selectedNode.id;
           // 统一不可见集合：隐藏边（桥语义）+ 隐藏节点（割点语义）共同作用下不可达的节点
+          // 聚焦分析模式下以所选人物为可见性中心，"自己"也可能被隐藏
           const invisibleNodeIds = computeInvisibleNodes(nodes, edges, hiddenNodeIds);
           // 成员是否不可见
           const isMemberInvisible = (memberId: string) => invisibleNodeIds.has(memberId);
@@ -883,10 +903,48 @@ export function PersonDetails() {
             return 'partial';
           };
 
-          // 隐藏操作封装：守卫失败时提示
+          // 隐藏操作封装：守卫失败时静默（不弹窗）
           const doFold = (category: string, state: 'all' | 'none') => {
-            const r = setCategoryFold(nodeId, category, state);
-            if (!r.ok) alert(r.reason);
+            return setCategoryFold(nodeId, category, state);
+          };
+          // 清除某类别的拦截标记
+          const clearIntercepted = (category: string) => {
+            setInterceptedCategories((prev) => {
+              if (!prev.has(category)) return prev;
+              const next = new Set(prev);
+              next.delete(category);
+              return next;
+            });
+          };
+
+          // "全部"按钮点击逻辑：
+          // - 第一次点击：按当前逻辑隐藏该类关系。若因类别含"自己"被守卫拦截，整体不生效（状态保持"无"），不弹窗。
+          // - 第二次点击（仅在状态仍为"无"/"部分"时可达，"全部"时按钮禁用）：
+          //   强制隐藏该类别全部成员（含"自己"），但仍保护所选人物不被隐藏。
+          // 选中人物变化时重置计数和拦截标记
+          if (allClickCountRef.current.__nodeId !== nodeId) {
+            allClickCountRef.current = { __nodeId: nodeId };
+            if (interceptedCategories.size > 0) setInterceptedCategories(new Set());
+          }
+          const handleAllClick = (category: string) => {
+            const count = (allClickCountRef.current[category] || 0) + 1;
+            allClickCountRef.current[category] = count;
+            if (count >= 2) {
+              // 第二次点击：强制隐藏类别成员（含"自己"），不弹窗，仍保护所选人物
+              setCategoryFold(nodeId, category, 'all', { force: true });
+              clearIntercepted(category);
+            } else {
+              // 第一次点击：正常逻辑；若被守卫拦截则标记为已拦截（橙色高亮）
+              const result = setCategoryFold(nodeId, category, 'all');
+              if (!result.ok) {
+                setInterceptedCategories((prev) => {
+                  if (prev.has(category)) return prev;
+                  const next = new Set(prev);
+                  next.add(category);
+                  return next;
+                });
+              }
+            }
           };
 
           const parentsState = computeFoldState((e) => (e.data as { type?: string })?.type === 'parent-child' && e.target === nodeId);
@@ -910,6 +968,7 @@ export function PersonDetails() {
             state,
             onAll,
             onNone,
+            intercepted,
             expandable,
             expanded,
             onToggleExpand,
@@ -918,6 +977,7 @@ export function PersonDetails() {
             state: FoldState;
             onAll: () => void;
             onNone: () => void;
+            intercepted?: boolean;
             expandable?: boolean;
             expanded?: boolean;
             onToggleExpand?: () => void;
@@ -928,10 +988,12 @@ export function PersonDetails() {
                   <button
                     type="button"
                     onClick={onToggleExpand}
+                    aria-expanded={!!expanded}
                     className={
                       'text-xs truncate transition-colors ' +
                       (expanded ? 'text-blue-600 font-medium' : 'text-gray-600 hover:text-blue-600')
                     }
+                    aria-label={expanded ? `收起${label}子选项` : `展开${label}子选项`}
                     title={expanded ? '收起子选项' : '展开子选项'}
                   >
                     {label}
@@ -943,13 +1005,15 @@ export function PersonDetails() {
                   className={
                     'text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ' +
                     (state === 'all'
-                      ? 'bg-orange-100 text-orange-600'
-                      : state === 'partial'
-                        ? 'bg-yellow-100 text-yellow-700'
-                        : 'bg-gray-100 text-gray-400')
+                      ? 'bg-gray-100 text-gray-400'
+                      : intercepted
+                        ? 'bg-orange-100 text-orange-600'
+                        : state === 'partial'
+                          ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-gray-100 text-gray-400')
                   }
                 >
-                  {state === 'all' ? '全部' : state === 'partial' ? '部分' : '无'}
+                  {state === 'all' ? tt('全部') : state === 'partial' ? tt('部分') : intercepted ? tt('已拦截') : tt('无')}
                 </span>
               </div>
               <div className="flex items-center gap-1 shrink-0">
@@ -957,50 +1021,66 @@ export function PersonDetails() {
                   type="button"
                   onClick={onAll}
                   disabled={state === 'all'}
-                  className="px-2 py-0.5 text-[10px] rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  全部
-                </button>
+                  aria-label={`${label}：${tt('隐藏该类别全部关系')}`}
+                  title={
+                    state === 'all'
+                      ? tt('该类别已全部隐藏')
+                      : intercepted
+                        ? tt('第一次被拦截，再次点击可强制隐藏（含"自己"）')
+                        : tt('隐藏该类别的全部关系（若含"自己"被拦截，再次点击可强制隐藏）')
+                  }
+                  className={
+                    'px-2 py-0.5 text-[10px] rounded border transition-colors ' +
+                    (state === 'all'
+                      ? 'border-gray-200 bg-gray-50 text-gray-400 cursor-not-allowed'
+                      : intercepted
+                        ? 'border-orange-300 bg-orange-50 text-orange-600 hover:bg-orange-100'
+                        : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50')
+                  }
+                >{tt('全部')}</button>
                 <button
                   type="button"
                   onClick={onNone}
                   disabled={state === 'none'}
+                  aria-label={`${label}：取消隐藏，恢复显示该类别关系`}
                   className="px-2 py-0.5 text-[10px] rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  无
-                </button>
+                >{tt('无')}</button>
               </div>
             </div>
           );
 
           return (
-            <CollapsibleSection title="关系隐藏" defaultOpen={false} storageKey="details:relCollapse">
+            <CollapsibleSection title={tt('关系隐藏')} defaultOpen={false} storageKey="details:relCollapse">
               <p className="text-[10px] text-gray-400 mb-2">
-                隐藏 = 概念上断开这些关系，断开后与"自己"不连通的角色全部隐藏（含"隐藏此人"的角色）。取消请选"无"。
+                {tt('隐藏 = 概念上断开这些关系，断开后与"自己"不连通的角色全部隐藏。取消请选"无"。若第一次点击「全部」被拦截（橙色高亮），再次点击可强制隐藏该类别（含"自己"），但仍不会隐藏当前选中的角色。')}
               </p>
               <FoldRow
-                label="隐藏父母"
+                label={tt('隐藏父母')}
                 state={parentsState}
-                onAll={() => doFold('parents', 'all')}
-                onNone={() => doFold('parents', 'none')}
+                intercepted={interceptedCategories.has('parents')}
+                onAll={() => handleAllClick('parents')}
+                onNone={() => { allClickCountRef.current['parents'] = 0; clearIntercepted('parents'); doFold('parents', 'none'); }}
               />
               <FoldRow
-                label="隐藏子女"
+                label={tt('隐藏子女')}
                 state={childrenState}
-                onAll={() => doFold('children', 'all')}
-                onNone={() => doFold('children', 'none')}
+                intercepted={interceptedCategories.has('children')}
+                onAll={() => handleAllClick('children')}
+                onNone={() => { allClickCountRef.current['children'] = 0; clearIntercepted('children'); doFold('children', 'none'); }}
               />
               <FoldRow
-                label="隐藏爱人"
+                label={tt('隐藏爱人')}
                 state={spouseState}
-                onAll={() => doFold('spouse', 'all')}
-                onNone={() => doFold('spouse', 'none')}
+                intercepted={interceptedCategories.has('spouse')}
+                onAll={() => handleAllClick('spouse')}
+                onNone={() => { allClickCountRef.current['spouse'] = 0; clearIntercepted('spouse'); doFold('spouse', 'none'); }}
               />
               <FoldRow
-                label="隐藏其他"
+                label={tt('隐藏其他')}
                 state={otherState}
-                onAll={() => doFold('other', 'all')}
-                onNone={() => doFold('other', 'none')}
+                intercepted={interceptedCategories.has('other')}
+                onAll={() => handleAllClick('other')}
+                onNone={() => { allClickCountRef.current['other'] = 0; clearIntercepted('other'); doFold('other', 'none'); }}
                 expandable={customLabels.length > 0}
                 expanded={expandOtherFold}
                 onToggleExpand={() => setExpandOtherFold((v) => !v)}
@@ -1018,8 +1098,9 @@ export function PersonDetails() {
                         key={label}
                         label={`隐藏${label}`}
                         state={subState}
-                        onAll={() => doFold(label, 'all')}
-                        onNone={() => doFold(label, 'none')}
+                        intercepted={interceptedCategories.has(label)}
+                        onAll={() => handleAllClick(label)}
+                        onNone={() => { allClickCountRef.current[label] = 0; clearIntercepted(label); doFold(label, 'none'); }}
                       />
                     );
                   })}
@@ -1036,49 +1117,52 @@ export function PersonDetails() {
             <button
               onClick={() => setAsSelf(selectedNode.id)}
               className="w-full flex items-center justify-center gap-2 bg-indigo-50 text-indigo-700 border border-indigo-200 px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-100 transition-colors"
-              title={'将此人设为「自己」，便于族谱分享给他人时切换角色'}
+              aria-label={tt('把这个人设置为我（即关系中的「自己」）')}
+              title={'将此人设为「自己」，便于关系网分享给他人时切换角色'}
             >
-              <UserCheck className="w-4 h-4" />
-              把这个人设置为我
-            </button>
+              <UserCheck className="w-4 h-4" aria-hidden="true" />{tt('把这个人设置为我')}</button>
           )}
 
           {/* 离世设置 */}
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
             <label className="flex items-center justify-between cursor-pointer">
               <span className="flex items-center gap-2 text-sm font-medium text-gray-700">
-                <Heart className="w-4 h-4 text-gray-400" />
-                已离世
-              </span>
+                <Heart className="w-4 h-4 text-gray-400" aria-hidden="true" />{tt('已离世')}</span>
               <input
                 type="checkbox"
+                id="rel-deceased"
                 checked={!!formData.deceased}
                 onChange={(e) => liveUpdate({deceased: e.target.checked })}
                 className="w-4 h-4 accent-gray-600"
+                aria-label={tt('已离世')}
               />
             </label>
             {formData.deceased && (
               <>
                 <div>
-                  <label className="block text-[10px] font-medium text-gray-500 mb-1">离世日期（可选，精确到日）</label>
+                  <label htmlFor="rel-death-date" className="block text-[10px] font-medium text-gray-500 mb-1">{tt('离世日期（可选，精确到日）')}</label>
                   <input
+                    id="rel-death-date"
                     type="date"
+                    lang={lang}
                     value={formData.deathDate || ''}
                     onChange={(e) => liveUpdate({deathDate: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-gray-500"
                   />
                 </div>
+                <label htmlFor="rel-death-reason" className="sr-only">{tt('离世原因（可选）')}</label>
                 <input
+                  id="rel-death-reason"
                   type="text"
                   value={formData.deathReason || ''}
                   onChange={(e) => liveUpdate({deathReason: e.target.value })}
-                  placeholder="离世原因（可选）"
+                  placeholder={tt('离世原因（可选）')}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-gray-500"
                 />
               </>
             )}
             <p className="text-[10px] text-gray-400">
-              离世的人会显示为灰黑色，并标注 ✝ 符号。年龄将截止到离世日期。
+              {tt('离世的人会显示为灰黑色，年龄将截止到离世日期。')}
             </p>
           </div>
         </div>
@@ -1088,21 +1172,19 @@ export function PersonDetails() {
           <button
             onClick={handleHide}
             className="mt-6 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-amber-600 border border-amber-300 rounded-md hover:bg-amber-50 transition-colors"
-            title="隐藏此人：仅通过此人连接到我的角色也会一并隐藏"
+            aria-label={tt('隐藏此人：仅通过此人连接到我的角色也会一并隐藏')}
+            title={tt('隐藏此人：仅通过此人连接到我的角色也会一并隐藏')}
           >
-            <EyeOff className="w-3.5 h-3.5" />
-            隐藏此人
-          </button>
+            <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />{tt('隐藏此人')}</button>
         )}
         {!formData.isSelf && (
           <button
             onClick={handleDelete}
             className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-red-600 border border-red-300 rounded-md hover:bg-red-50 transition-colors"
-            title="删除此人记录"
+            aria-label={tt('删除此人记录')}
+            title={tt('删除此人记录')}
           >
-            <Trash2 className="w-3.5 h-3.5" />
-            删除此人记录
-          </button>
+            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />{tt('删除此人记录')}</button>
         )}
       </div>
     </div>

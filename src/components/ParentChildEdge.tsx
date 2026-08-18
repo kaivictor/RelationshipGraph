@@ -1,7 +1,9 @@
 import { BaseEdge, EdgeLabelRenderer, EdgeProps } from '@xyflow/react';
-import { useRelationshipStore } from '../store/useRelationshipStore';
+import { useRelationshipStore, buildEdgeAriaLabel } from '../store/useRelationshipStore';
+import { useLang } from '../i18n';
 
 export default function ParentChildEdge({
+  id,
   source,
   target,
   sourceX,
@@ -15,13 +17,18 @@ export default function ParentChildEdge({
   const disconnected = (data as { disconnected?: boolean })?.disconnected;
   const showEdgeRelationship = useRelationshipStore((s) => s.displaySettings.showEdgeRelationship);
   const nodes = useRelationshipStore((s) => s.nodes);
+  const isEn = useLang() === 'en'; // 订阅语言变化，切换时重新渲染连线字符
+  const ariaText = buildEdgeAriaLabel(
+    { id, source, target, data } as Parameters<typeof buildEdgeAriaLabel>[0],
+    nodes
+  );
 
   // 查找父子两端节点的性别：source=父母，target=子女
   const parentNode = nodes.find((n) => n.id === source);
   const childNode = nodes.find((n) => n.id === target);
   // source端字符（父母），target端字符（子女）
-  const sourceChar = parentNode?.data.gender === 'female' ? '母' : '父';
-  const targetChar = childNode?.data.gender === 'female' ? '女' : '子';
+  const sourceChar = parentNode?.data.gender === 'female' ? (isEn ? 'Mo' : '母') : (isEn ? 'Fa' : '父');
+  const targetChar = childNode?.data.gender === 'female' ? (isEn ? 'Da' : '女') : (isEn ? 'So' : '子');
 
   // 几何方向
   const dx = targetX - sourceX;
@@ -78,6 +85,7 @@ export default function ParentChildEdge({
       {showEdgeRelationship && !disconnected && (
         <EdgeLabelRenderer>
           <div
+            aria-hidden="true"
             style={{
               position: 'absolute',
               left: 0,
@@ -89,24 +97,30 @@ export default function ParentChildEdge({
             }}
             className="nodrag nopan bg-white rounded px-1 shadow-sm border border-gray-200 flex items-center justify-center"
           >
-            {isSteepVertical ? (
-              // 纯垂直线：文字竖排（每字一行）
-              <div className="flex flex-col items-center leading-[1.1] py-0.5">
-                <span className="text-[10px] text-gray-600">{displayStart}</span>
-                <span className="text-[10px] text-gray-300">·</span>
-                <span className="text-[10px] text-gray-600">{displayEnd}</span>
-              </div>
-            ) : (
-              // 水平/斜线：文字横排并沿线旋转
-              <div className="flex items-center px-0.5" style={{ gap: short ? 0 : 1 }}>
-                <span className="text-[10px] text-gray-600 leading-none">{displayStart}</span>
-                <span className="text-[10px] text-gray-300 leading-none">·</span>
-                <span className="text-[10px] text-gray-600 leading-none">{displayEnd}</span>
-              </div>
-            )}
+            <div aria-hidden="true">
+              {isSteepVertical ? (
+                // 纯垂直线：文字竖排（每字一行）
+                <div className="flex flex-col items-center leading-[1.1] py-0.5">
+                  <span className="text-[10px] text-gray-600">{displayStart}</span>
+                  <span className="text-[10px] text-gray-300">·</span>
+                  <span className="text-[10px] text-gray-600">{displayEnd}</span>
+                </div>
+              ) : (
+                // 水平/斜线：文字横排并沿线旋转
+                <div className="flex items-center px-0.5" style={{ gap: short ? 0 : 1 }}>
+                  <span className="text-[10px] text-gray-600 leading-none">{displayStart}</span>
+                  <span className="text-[10px] text-gray-300 leading-none">·</span>
+                  <span className="text-[10px] text-gray-600 leading-none">{displayEnd}</span>
+                </div>
+              )}
+            </div>
           </div>
         </EdgeLabelRenderer>
       )}
+      {/* 屏幕阅读器：React Flow 不读取 edge.ariaLabel，这里用 sr-only 文本承载「两端+关系+方向」 */}
+      <EdgeLabelRenderer>
+        <span className="sr-only">{ariaText}</span>
+      </EdgeLabelRenderer>
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useCallback, type ReactNode } from 'react';
+import { useState, useCallback, type ReactNode, useId } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 type Props = {
@@ -48,22 +48,31 @@ export function CollapsibleSection({ title, defaultOpen = true, hint, children, 
     });
   }, [storageKey]);
 
+  const contentId = useId();
+
   return (
     <div className={'mt-4 pt-4 border-t border-gray-200 first:mt-0 first:pt-0 first:border-t-0 ' + className}>
       <button
         type="button"
         onClick={toggle}
+        aria-expanded={open}
+        aria-controls={contentId}
         className="flex items-center gap-1 w-full text-left group"
       >
+        {/* 箭头仅为视觉装饰，折叠状态由 aria-expanded 表达 */}
         {open ? (
-          <ChevronDown className="w-3.5 h-3.5 text-gray-400 group-hover:text-gray-600" />
+          <ChevronDown aria-hidden="true" className="w-3.5 h-3.5 text-gray-400 group-hover:text-gray-600" />
         ) : (
-          <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-gray-600" />
+          <ChevronRight aria-hidden="true" className="w-3.5 h-3.5 text-gray-400 group-hover:text-gray-600" />
         )}
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{title}</span>
-        {hint && <span className="font-normal normal-case text-gray-300 text-xs ml-1">{hint}</span>}
+        {hint && <span className="font-normal normal-case text-gray-300 text-xs ml-1" aria-hidden="true">{hint}</span>}
       </button>
-      {open && <div className="mt-2">{children}</div>}
+      {open && (
+        <div className="mt-2" id={contentId}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }

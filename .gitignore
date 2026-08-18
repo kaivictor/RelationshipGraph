@@ -12,3 +12,4 @@ temp/
 .gitee/
 devdoc/
 *.lnk
+__pycache__/

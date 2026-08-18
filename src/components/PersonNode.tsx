@@ -21,6 +21,7 @@ import { AutoScrollText } from './AutoScrollText';
 import { copyText } from './copyUtils';
 import { ContactQRTooltip, QR_SUPPORTED_FIELDS } from './ContactQRTooltip';
 import clsx from 'clsx';
+import { t, useLang } from '../i18n';
 
 function calculateAge(birthDate: string, deathDate?: string): number | null {
   if (!birthDate) return null;
@@ -47,25 +48,31 @@ function calculateAge(birthDate: string, deathDate?: string): number | null {
   return age;
 }
 
-function formatBirthDate(birthDate: string): string {
+function formatBirthDate(birthDate: string, lang: string): string {
   if (!birthDate) return '';
   const parts = birthDate.split('-');
   if (parts.length < 2) return birthDate;
+  if (lang === 'en') return `${parts[0]}-${parts[1]}`;
   return `${parts[0]}年${parts[1]}月`;
 }
 
 // 格式化离世日期：含日则显示"年月日"，否则"年月"
-function formatDeathDate(deathDate: string): string {
+function formatDeathDate(deathDate: string, lang: string): string {
   if (!deathDate) return '';
   const parts = deathDate.split('-');
+  if (lang === 'en') {
+    if (parts.length >= 3) return `${parts[0]}-${parts[1]}-${parts[2]}`;
+    if (parts.length === 2) return `${parts[0]}-${parts[1]}`;
+    return deathDate;
+  }
   if (parts.length >= 3) return `${parts[0]}年${parts[1]}月${parts[2]}日`;
   if (parts.length === 2) return `${parts[0]}年${parts[1]}月`;
   return deathDate;
 }
 
 function GenderSymbol({ gender }: { gender: PersonData['gender'] }) {
-  if (gender === 'male') return <span className="text-blue-500 text-sm leading-none">♂</span>;
-  if (gender === 'female') return <span className="text-pink-500 text-sm leading-none">♀</span>;
+  if (gender === 'male') return <span className="text-blue-500 text-sm leading-none" aria-label={t('male')} role="img">♂</span>;
+  if (gender === 'female') return <span className="text-pink-500 text-sm leading-none" aria-label={t('female')} role="img">♀</span>;
   return null;
 }
 
@@ -85,6 +92,22 @@ const BUILTIN_LABELS: Record<string, string> = {
   douyin: '抖音',
   twitter: '推特',
   xiaohongshu: '小红书',
+};
+const BUILTIN_LABELS_EN: Record<string, string> = {
+  phone: 'Phone',
+  qq: 'QQ',
+  wechat: 'WeChat',
+  email: 'Email',
+  address: 'Address',
+  licensePlate: 'License plate',
+  bilibili: 'Bilibili',
+  discord: 'Discord',
+  reddit: 'Reddit',
+  threads: 'Threads',
+  whatsapp: 'WhatsApp',
+  douyin: 'Douyin',
+  twitter: 'Twitter',
+  xiaohongshu: 'Xiaohongshu',
 };
 
 // 使用图标（不显示属性名）的字段
@@ -106,6 +129,7 @@ const ICON_FIELDS = {
 };
 
 export function PersonNodeComponent({ id, data, selected }: { id: string; data: PersonData; selected: boolean }) {
+  const isEn = useLang() === 'en';
   const displaySettings = useRelationshipStore((state) => state.displaySettings);
   const isGrayed = useRelationshipStore((state) => state.grayedNodeIds.has(id));
   const edges = useRelationshipStore((state) => state.edges);
@@ -131,14 +155,15 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
 
   const age = displaySettings.showAge ? calculateAge(data.birthDate, data.deathDate) : null;
   const showAgeNum = age !== null && age >= 0;
-  const birthStr = displaySettings.showBirthDate && data.birthDate ? formatBirthDate(data.birthDate) : '';
+  const birthStr = displaySettings.showBirthDate && data.birthDate ? formatBirthDate(data.birthDate, isEn ? 'en' : 'zh') : '';
   // 离世者且开启"离世日期代替出生日期"：显示"年龄·死亡年月"；否则"出生年月·年龄"
   const useDeathReplace = data.deceased && data.deathDate && displaySettings.deathDateReplaceBirth;
-  const deathStr = useDeathReplace ? formatDeathDate(data.deathDate!) : '';
+  const deathStr = useDeathReplace ? formatDeathDate(data.deathDate!, isEn ? 'en' : 'zh') : '';
   // 合并为一行
+  const ageUnit = isEn ? ' yrs' : '岁';
   const infoLine = useDeathReplace
-    ? [showAgeNum ? `${age}岁` : '', deathStr].filter(Boolean).join(' · ')
-    : [birthStr, showAgeNum ? `${age}岁` : ''].filter(Boolean).join(' · ');
+    ? [showAgeNum ? `${age}${ageUnit}` : '', deathStr].filter(Boolean).join(' · ')
+    : [birthStr, showAgeNum ? `${age}${ageUnit}` : ''].filter(Boolean).join(' · ');
 
   // 获取可拖拽字段的值（返回数组：内置多值字段为数组，自定义字段包装为单元素数组）
   const getFieldValues = (key: string): string[] => {
@@ -196,7 +221,8 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
   };
 
   const getLabel = (key: string): string => {
-    return BUILTIN_LABELS[key] ?? displaySettings.customFields.find((f) => f.id === key)?.label ?? key;
+    const labels = isEn ? BUILTIN_LABELS_EN : BUILTIN_LABELS;
+    return labels[key] ?? displaySettings.customFields.find((f) => f.id === key)?.label ?? key;
   };
 
   // 仅渲染可见且有值的可拖拽字段
@@ -243,7 +269,7 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
           <div
             className="text-[10px] text-gray-400 leading-tight cursor-pointer select-none"
             onDoubleClick={(e) => copyText(data.namePinyin!, e)}
-            title="双击复制"
+            title={t('doubleClickCopy')}
           >
             {data.namePinyin}
           </div>
@@ -254,7 +280,7 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
           <span
             className="font-bold text-sm text-gray-800 truncate cursor-pointer select-none"
             onDoubleClick={(e) => copyText(data.name, e)}
-            title="双击复制"
+            title={t('doubleClickCopy')}
           >
             {data.name}
           </span>
@@ -270,9 +296,9 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
             <div
               className="text-[10px] text-gray-400 mt-0.5 cursor-pointer select-none"
               onDoubleClick={(e) => copyText(joined, e)}
-              title="双击复制"
+              title={t('doubleClickCopy')}
             >
-              曾用名：{joined}
+              {t('formerNames')}：{joined}
             </div>
           );
         })()}
@@ -295,7 +321,7 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
                       : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
                   )}
                   onDoubleClick={(e) => copyText(data.relationship, e)}
-                  title={data.relationshipOverridden ? '手动设置的称谓，双击复制' : '系统自动计算的称谓，双击复制'}
+                  title={data.relationshipOverridden ? t('manualTerm') : t('autoCalculatedTerm')}
                 >
                   {data.relationship}
                   {data.relationshipOverridden && <span className="ml-0.5 text-amber-500">✎</span>}
@@ -305,7 +331,7 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
                 <span
                   className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full cursor-pointer select-none hover:bg-gray-200 transition-colors"
                   onDoubleClick={(e) => copyText(popJoined, e)}
-                  title="双击复制俗称"
+                  title={t('copyPopular')}
                 >
                   （{popJoined}）
                 </span>
@@ -320,7 +346,7 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
             className="overflow-hidden bg-gray-100 flex items-center justify-center mt-2 border border-gray-300 cursor-pointer select-none"
             style={{ width: '49px', height: '63px', borderRadius: '4px' }}
             onDoubleClick={(e) => data.avatar && copyText(data.avatar, e)}
-            title={data.avatar ? '双击复制头像' : undefined}
+            title={data.avatar ? t('copyAvatar') : undefined}
           >
             {data.avatar ? (
               <img
@@ -331,11 +357,11 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
                 className="w-full h-full object-cover pointer-events-none"
               />
             ) : data.gender === 'male' ? (
-              <User className="w-7 h-7 text-blue-500" />
+              <User className="w-7 h-7 text-blue-500" aria-hidden="true" />
             ) : data.gender === 'female' ? (
-              <UserRound className="w-7 h-7 text-pink-500" />
+              <UserRound className="w-7 h-7 text-pink-500" aria-hidden="true" />
             ) : (
-              <UserRoundSearch className="w-7 h-7 text-gray-400" />
+              <UserRoundSearch className="w-7 h-7 text-gray-400" aria-hidden="true" />
             )}
           </div>
         )}
@@ -345,7 +371,7 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
           <div
             className="mt-2 text-[11px] text-gray-500 cursor-pointer select-none"
             onDoubleClick={(e) => copyText(infoLine, e)}
-            title="双击复制"
+            title={t('doubleClickCopy')}
           >
             {infoLine}
           </div>
@@ -356,7 +382,7 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
           <div
             className="mt-1 text-[11px] text-gray-600 cursor-pointer select-none"
             onDoubleClick={(e) => copyText(data.education!, e)}
-            title="双击复制"
+            title={t('doubleClickCopy')}
           >
             {data.education}
           </div>
@@ -386,7 +412,7 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
                   )}
                 >
                   {isIcon ? (
-                    <IconComp className="w-3 h-3 mt-0.5 text-gray-400 shrink-0 pointer-events-none" />
+                    <IconComp className="w-3 h-3 mt-0.5 text-gray-400 shrink-0 pointer-events-none" aria-hidden="true" />
                   ) : (
                     <span className="text-gray-400 shrink-0 pointer-events-none mt-0.5">{getLabel(key)}:</span>
                   )}
@@ -396,7 +422,8 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
                         <span
                           key={idx}
                           className="cursor-pointer hover:text-gray-800 break-all leading-tight"
-                          title={`${getLabel(key)}: ${value}（双击复制${QR_SUPPORTED_FIELDS.has(key) ? '，长按显示二维码' : ''}）`}
+                          aria-label={`${getLabel(key)}：${value}${QR_SUPPORTED_FIELDS.has(key) ? t('showQr') : ''}`}
+                          title={`${getLabel(key)}: ${value}${QR_SUPPORTED_FIELDS.has(key) ? t('showQrLongPress') : t('doubleClickCopy')}`}
                           onDoubleClick={(e) => copyText(value, e)}
                         >
                           <AutoScrollText value={value} />
@@ -424,7 +451,7 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
                   'flex items-center gap-1 min-w-0 text-[10px] text-gray-600 cursor-pointer select-none',
                   useTwoCols ? 'justify-start px-1' : 'justify-center w-full'
                 )}
-                title={`${attr.key}: ${attr.value}（双击复制）`}
+                title={`${attr.key}: ${attr.value}${t('doubleClickCopy')}`}
                 onDoubleClick={(e) => copyText(attr.value, e)}
               >
                 <span className="text-gray-400 shrink-0 pointer-events-none">{attr.key}:</span>
@@ -435,17 +462,17 @@ export function PersonNodeComponent({ id, data, selected }: { id: string; data: 
         )}
       </div>
 
-      {/* 关系统计徽章：父母 x 子女 x 爱人 x 其他 xx */}
+      {/* 关系统计徽章：统计信息已包含在节点 aria-label 中，此处仅作视觉装饰，避免屏幕阅读器重复朗读 */}
       {displaySettings.showStatsBadge && (
-        <div className="mt-1.5 flex justify-center">
+        <div className="mt-1.5 flex justify-center" aria-hidden="true">
           <div className="inline-flex items-center gap-px px-1 py-[1px] rounded-md bg-gray-100/80 border border-gray-200/70 text-[8px] leading-none text-gray-500 select-none">
-            <span>父母{formatCount(stats.parents)}</span>
+            <span>{t('statParents')}{formatCount(stats.parents)}</span>
             <span className="text-gray-300 text-[6px]">·</span>
-            <span>子女{formatCount(stats.children)}</span>
+            <span>{t('statChildren')}{formatCount(stats.children)}</span>
             <span className="text-gray-300 text-[6px]">·</span>
-            <span>爱人{formatCount(stats.spouse)}</span>
+            <span>{t('statSpouse')}{formatCount(stats.spouse)}</span>
             <span className="text-gray-300 text-[6px]">·</span>
-            <span>其他{formatCount(stats.others)}</span>
+            <span>{t('statOthers')}{formatCount(stats.others)}</span>
           </div>
         </div>
       )}

@@ -6,6 +6,11 @@
 功能：
 - XML：根节点 <familyTree> 重命名为 <relationship>，补全新版 displaySettings 字段
 - JSON：补全缺失的 displaySettings / viewport 默认值，规范化节点多值字段
+- Y 坐标重算：旧版分段非线性间距 → 新版线性均匀（每年 10px × scale）
+  · yOverridden=true 的节点保留原 Y（用户手动拖过的，不重算）
+  · 其余节点按 birthDate 相邻差值用线性公式累加
+- displaySettings 补全新增字段：showStatsBadge / showCoordinateSystem /
+  allowVerticalMove / coordinateLineStep
 
 用法：
     python tools/convert_legacy.py 输入文件 [输出文件]
@@ -60,6 +65,10 @@ DEFAULT_DISPLAY_SETTINGS: dict = {
     "persistToBrowser": True,
     "deathDateReplaceBirth": True,
     "showCanvasHint": True,
+    "showStatsBadge": True,
+    "showCoordinateSystem": False,
+    "allowVerticalMove": False,
+    "coordinateLineStep": 10,
 }
 
 # 布尔类型的 displaySettings 字段
@@ -70,8 +79,12 @@ DISPLAY_BOOL_FIELDS = {
     "showBilibili", "showDiscord", "showReddit", "showThreads", "showWhatsapp",
     "showDouyin", "showTwitter", "showXiaohongshu",
     "showGrayOnDisconnect", "showEdgeRelationship", "persistToBrowser",
-    "deathDateReplaceBirth", "showCanvasHint",
+    "deathDateReplaceBirth", "showCanvasHint", "showStatsBadge",
+    "showCoordinateSystem", "allowVerticalMove",
 }
+
+# 整数类型的 displaySettings 字段
+DISPLAY_INT_FIELDS = {"coordinateLineStep"}
 
 # 人物节点多值字段（新版 store 的 MULTI_VALUE_FIELDS）
 MULTI_VALUE_FIELDS = {
@@ -112,6 +125,183 @@ def normalize_node_data(data: dict) -> dict:
     return out
 
 
+# ---------------- Y 坐标重算（旧版分段非线性 → 新版线性均匀） ----------------
+
+# 线性间距公式：每年固定像素值（与 src/store/useRelationshipStore.ts 的 getGapPixels 一致）
+PX_PER_YEAR = 10
+
+
+def _parse_birth_year(birth_date) -> float:
+    """从 birthDate（YYYY-MM 或 YYYY-MM-DD）解析年份，无效返回 NaN"""
+    if not birth_date or not isinstance(birth_date, str):
+        return float("nan")
+    parts = birth_date.split("-")
+    try:
+        return float(parts[0])
+    except (ValueError, IndexError):
+        return float("nan")
+
+
+def _years_to_ms(years: float) -> float:
+    return years * 365.25 * 24 * 3600 * 1000
+
+
+def _date_to_year_float(birth_date: str) -> float:
+    """
+    birthDate (YYYY-MM / YYYY-MM-DD) → 年份浮点数（含月份小数）。
+    与 store 中 new Date(birthDate).getTime() / MS_PER_YEAR 等价：
+    JavaScript 的 new Date('YYYY-MM') 解析为 UTC 该年月1日0点。
+    这里用 calendar 计算该年月1日相对该年1月1日的天数，再除以 365.25 转年。
+    无效返回 NaN。
+    """
+    if not birth_date:
+        return float("nan")
+    parts = birth_date.split("-")
+    try:
+        year = int(parts[0])
+    except (ValueError, IndexError):
+        return float("nan")
+    if len(parts) > 1:
+        try:
+            month = int(parts[1])
+        except ValueError:
+            month = 1
+    else:
+        month = 1
+    if len(parts) > 2:
+        try:
+            day = int(parts[2])
+        except ValueError:
+            day = 1
+    else:
+        day = 1
+    import calendar as _cal
+    # 该年1月1日到该年月日1日的天数（与 JS new Date('YYYY-MM-DD').getTime() 在 UTC 下一致）
+    # JS: Date(YYYY,MM-1,1) 但 'YYYY-MM' 字符串解析为 UTC
+    days_from_jan1 = _cal.timegm((year, month, day, 0, 0, 0, 0, 0, 0)) - _cal.timegm((year, 1, 1, 0, 0, 0, 0, 0, 0))
+    days_from_year_start = days_from_jan1 / 86400.0
+    return year + days_from_year_start / 365.25
+
+
+def recalculate_y_positions(nodes: list) -> list:
+    """
+    按"新版线性均匀公式"重算节点 Y 坐标。
+    - yOverridden=true 的节点保留原 Y（用户手动拖过的，不重算）
+    - 其余节点按 birthDate 排序，相邻差值用 years * 10 * scale 累加
+    - scale = displaySettings.verticalGapScale（若可用）
+    返回新的 nodes 列表（不修改原对象）。
+    """
+    if not nodes:
+        return nodes
+
+    # 读取 verticalGapScale（从 displaySettings，默认 1）
+    # 此函数在 convert_json/convert_xml 中调用时，displaySettings 尚未合并完成，
+    # 故优先从传入节点的"原始数据上下文"取——这里简化为默认 1，由后续导入时
+    # 应用再次重算（applyRelativeYPositions 会用最终 scale 重算，但保留 yOverridden）。
+    # 注：工具只做"清理旧版分段非线性 Y"，最终 scale 由应用处理。
+    scale = 1
+
+    # 收集需重算的节点（非 yOverridden）及其 birthDate
+    to_calc = []  # [(index, birth_date, year_float)]
+    for i, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") or {}
+        if data.get("yOverridden"):
+            continue
+        bd = data.get("birthDate") or ""
+        yf = _date_to_year_float(bd)
+        to_calc.append((i, bd, yf))
+
+    if not to_calc:
+        return nodes
+
+    # 按 birthDate 年份排序（NaN 排最前，Y=0）
+    to_calc.sort(key=lambda x: 0 if x[2] != x[2] else x[2])
+
+    # 累加 Y
+    date_to_y = {}
+    current_y = 0.0
+    prev_yf = to_calc[0][2]
+    if prev_yf != prev_yf:  # NaN
+        prev_yf = 0
+    date_to_y[to_calc[0][1]] = current_y
+
+    for idx in range(1, len(to_calc)):
+        _, bd, yf = to_calc[idx]
+        if yf != yf:  # NaN
+            yf = prev_yf
+        years_diff = yf - prev_yf
+        current_y += years_diff * PX_PER_YEAR * scale
+        date_to_y[bd] = current_y
+        prev_yf = yf
+
+    # 应用新 Y（保留 X，仅改 Y）
+    new_nodes = []
+    for i, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            new_nodes.append(node)
+            continue
+        data = node.get("data") or {}
+        if data.get("yOverridden"):
+            new_nodes.append(node)
+            continue
+        bd = data.get("birthDate") or ""
+        pos = node.get("position") or {"x": 0, "y": 0}
+        new_y = date_to_y.get(bd, 0)
+        new_node = dict(node)
+        new_node["position"] = {"x": pos.get("x", 0), "y": new_y}
+        new_nodes.append(new_node)
+    return new_nodes
+
+
+def _recalculate_xml_y(node_list):
+    """
+    XML 专用：就地重算节点 position 的 y 属性。
+    node_list: [(node_el, birth_date, is_y_overridden), ...]
+    """
+    if not node_list:
+        return
+
+    # 筛选需重算的（非 yOverridden）
+    to_calc = [(el, bd, _date_to_year_float(bd)) for (el, bd, yo) in node_list if not yo]
+    if not to_calc:
+        return
+
+    # 排序（NaN 排最前）
+    to_calc.sort(key=lambda x: 0 if x[2] != x[2] else x[2])
+
+    date_to_y = {}
+    current_y = 0.0
+    prev_yf = to_calc[0][2]
+    if prev_yf != prev_yf:  # NaN
+        prev_yf = 0
+    date_to_y[to_calc[0][1]] = current_y
+
+    for idx in range(1, len(to_calc)):
+        el, bd, yf = to_calc[idx]
+        if yf != yf:
+            yf = prev_yf
+        years_diff = yf - prev_yf
+        current_y += years_diff * PX_PER_YEAR
+        date_to_y[bd] = current_y
+        prev_yf = yf
+
+    # 应用新 Y 到 position 元素的 y 属性
+    for el, bd, yo in node_list:
+        if yo:
+            continue
+        pos_el = el.find("position")
+        if pos_el is None:
+            continue
+        new_y = date_to_y.get(bd, 0)
+        # 整数化（避免浮点小数）：若为整数则用 int，否则保留一位小数
+        if new_y == int(new_y):
+            pos_el.set("y", str(int(new_y)))
+        else:
+            pos_el.set("y", f"{new_y:.1f}")
+
+
 # ---------------- JSON 转换 ----------------
 
 def convert_json(text: str) -> str:
@@ -131,6 +321,9 @@ def convert_json(text: str) -> str:
             if isinstance(d, dict):
                 node["data"] = normalize_node_data(d)
 
+    # Y 坐标重算：旧版分段非线性 → 新版线性均匀（保留 yOverridden 节点）
+    parsed["nodes"] = recalculate_y_positions(nodes)
+
     # displaySettings：与新版默认值合并，补全缺失字段
     ds = parsed.get("displaySettings")
     merged_ds = dict(DEFAULT_DISPLAY_SETTINGS)
@@ -143,6 +336,11 @@ def convert_json(text: str) -> str:
                     merged_ds[k] = float(v)
                 except (TypeError, ValueError):
                     merged_ds[k] = 1
+            elif k in DISPLAY_INT_FIELDS:
+                try:
+                    merged_ds[k] = int(v)
+                except (TypeError, ValueError):
+                    merged_ds[k] = DEFAULT_DISPLAY_SETTINGS[k]
             else:
                 merged_ds[k] = v
         # fieldOrder 中缺失的内置字段自动加入末尾
@@ -185,7 +383,32 @@ def convert_xml(text: str) -> str:
     # 1. 根节点重命名
     root.tag = "relationship"
 
-    # 2. displaySettings 补全新版字段
+    # 2. 节点：读取为列表用于 Y 重算，同时规范化多值字段
+    nodes_el = root.find("nodes")
+    node_list = []  # [(node_el, birth_date, is_y_overridden)]
+    if nodes_el is not None:
+        for node_el in nodes_el.findall("node"):
+            d = node_el.find("data")
+            birth_date = ""
+            is_y_overridden = False
+            if d is not None:
+                bd_el = d.find("birthDate")
+                if bd_el is not None and bd_el.text:
+                    birth_date = bd_el.text
+                yo_el = d.find("yOverridden")
+                if yo_el is not None and yo_el.text and yo_el.text.strip().lower() in ("true", "1", "yes"):
+                    is_y_overridden = True
+                # 多值字段清理（空项移除）
+                for f in MULTI_VALUE_FIELDS:
+                    fe = d.find(f)
+                    if fe is not None and (fe.text is None or fe.text.strip() == ""):
+                        d.remove(fe)
+            node_list.append((node_el, birth_date, is_y_overridden))
+
+    # Y 坐标重算：旧版分段非线性 → 新版线性均匀（保留 yOverridden）
+    _recalculate_xml_y(node_list)
+
+    # 3. displaySettings 补全新版字段
     ds_el = root.find("displaySettings")
     if ds_el is None:
         ds_el = ET.SubElement(root, "displaySettings")
@@ -198,6 +421,9 @@ def convert_xml(text: str) -> str:
         if key in DISPLAY_BOOL_FIELDS:
             el = ET.SubElement(ds_el, key)
             el.text = _bool_str(val)
+        elif key in DISPLAY_INT_FIELDS:
+            el = ET.SubElement(ds_el, key)
+            el.text = str(val)
         elif key in ("fieldOrder", "customFields", "removedBuiltinFields"):
             # 复合结构：缺失时补空结构，避免新版导入逻辑读不到
             container = ET.SubElement(ds_el, key)
@@ -223,15 +449,13 @@ def convert_xml(text: str) -> str:
                 item = ET.SubElement(fo_el, "item")
                 item.text = k
 
-    # 3. viewport 缺失时补默认
+    # 4. viewport 缺失时补默认
     if root.find("viewport") is None:
         vp = ET.SubElement(root, "viewport")
         vp.set("x", "0")
         vp.set("y", "0")
         vp.set("zoom", "1")
 
-    # 4. 节点数据规范化：多值字段从 | 分隔还原为数组语义（保持文本形式即可，
-    #    新版导入会自动拆分；这里仅确保空项清理）
     return ET.tostring(root, encoding="unicode", xml_declaration=False)
 
 

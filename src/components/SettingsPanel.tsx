@@ -1,49 +1,56 @@
-import { useState } from 'react';
+import { useState, useMemo, useId } from 'react';
 import { useRelationshipStore, DisplaySettings } from '../store/useRelationshipStore';
 import { Settings, ChevronRight, ChevronLeft, GripVertical, Plus, Trash2, EyeOff } from 'lucide-react';
 import { CollapsibleSection } from './CollapsibleSection';
 import clsx from 'clsx';
+import { t, useLang } from '../i18n';
 
 type ToggleKey = keyof DisplaySettings;
 
-// 固定区字段（文化程度及以上，不可拖动排序）
-const FIXED_FIELDS: { key: string; label: string; toggleKey: ToggleKey | null; hint?: string }[] = [
-  { key: 'namePinyin', label: '姓名拼音', toggleKey: 'showNamePinyin' },
-  { key: 'name', label: '姓名', toggleKey: null, hint: '始终显示' },
-  { key: 'formerName', label: '曾用名', toggleKey: 'showFormerName' },
-  { key: 'relationship', label: '称谓', toggleKey: 'showRelationship' },
-  { key: 'popularName', label: '称谓俗称', toggleKey: 'showPopularName' },
-  { key: 'avatar', label: '头像', toggleKey: 'showAvatar' },
-  { key: 'birthDate', label: '出生年月', toggleKey: 'showBirthDate' },
-  { key: 'age', label: '年龄', toggleKey: 'showAge' },
-  { key: 'education', label: '文化程度', toggleKey: 'showEducation' },
+// 固定区字段（文化程度及以上，不可拖动排序）—— label 为 i18n 字典键
+const FIXED_FIELDS: { key: string; label: string; toggleKey: ToggleKey | null; hintKey?: string }[] = [
+  { key: 'namePinyin', label: 'f_namePinyin', toggleKey: 'showNamePinyin' },
+  { key: 'name', label: 'f_name', toggleKey: null, hintKey: 'alwaysShow' },
+  { key: 'formerName', label: 'f_formerName', toggleKey: 'showFormerName' },
+  { key: 'relationship', label: 'f_relationship', toggleKey: 'showRelationship' },
+  { key: 'popularName', label: 'f_popularName', toggleKey: 'showPopularName' },
+  { key: 'avatar', label: 'f_avatar', toggleKey: 'showAvatar' },
+  { key: 'birthDate', label: 'f_birthDate', toggleKey: 'showBirthDate' },
+  { key: 'age', label: 'f_age', toggleKey: 'showAge' },
+  { key: 'education', label: 'f_education', toggleKey: 'showEducation' },
 ];
 
-// 可拖拽区内置字段（文化程度以下）
+// 可拖拽区内置字段（文化程度以下）—— label 为 i18n 字典键
 const BUILTIN_DRAGGABLE: { key: string; label: string; toggleKey: ToggleKey }[] = [
-  { key: 'phone', label: '手机号', toggleKey: 'showPhone' },
-  { key: 'qq', label: 'QQ号', toggleKey: 'showQq' },
-  { key: 'wechat', label: '微信号', toggleKey: 'showWechat' },
-  { key: 'email', label: '邮箱号', toggleKey: 'showEmail' },
-  { key: 'address', label: '住址', toggleKey: 'showAddress' },
-  { key: 'licensePlate', label: '车牌号', toggleKey: 'showLicensePlate' },
+  { key: 'phone', label: 'f_phone', toggleKey: 'showPhone' },
+  { key: 'qq', label: 'f_qq', toggleKey: 'showQq' },
+  { key: 'wechat', label: 'f_wechat', toggleKey: 'showWechat' },
+  { key: 'email', label: 'f_email', toggleKey: 'showEmail' },
+  { key: 'address', label: 'f_address', toggleKey: 'showAddress' },
+  { key: 'licensePlate', label: 'f_licensePlate', toggleKey: 'showLicensePlate' },
   // 社交媒体
-  { key: 'bilibili', label: '哔哩哔哩', toggleKey: 'showBilibili' },
-  { key: 'discord', label: 'Discord', toggleKey: 'showDiscord' },
-  { key: 'reddit', label: 'Reddit', toggleKey: 'showReddit' },
-  { key: 'threads', label: 'Threads', toggleKey: 'showThreads' },
-  { key: 'whatsapp', label: 'WhatsApp', toggleKey: 'showWhatsapp' },
-  { key: 'douyin', label: '抖音', toggleKey: 'showDouyin' },
-  { key: 'twitter', label: '推特', toggleKey: 'showTwitter' },
-  { key: 'xiaohongshu', label: '小红书', toggleKey: 'showXiaohongshu' },
+  { key: 'bilibili', label: 'f_bilibili', toggleKey: 'showBilibili' },
+  { key: 'discord', label: 'f_discord', toggleKey: 'showDiscord' },
+  { key: 'reddit', label: 'f_reddit', toggleKey: 'showReddit' },
+  { key: 'threads', label: 'f_threads', toggleKey: 'showThreads' },
+  { key: 'whatsapp', label: 'f_whatsapp', toggleKey: 'showWhatsapp' },
+  { key: 'douyin', label: 'f_douyin', toggleKey: 'showDouyin' },
+  { key: 'twitter', label: 'f_twitter', toggleKey: 'showTwitter' },
+  { key: 'xiaohongshu', label: 'f_xiaohongshu', toggleKey: 'showXiaohongshu' },
 ];
 
 function Toggle({ checked, onChange, label, description }: { checked: boolean; onChange: (v: boolean) => void; label?: string; description?: string }) {
+  const labelId = useId();
+  const descId = description ? useId() : undefined;
+
   const toggle = (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-labelledby={label ? labelId : undefined}
+      aria-label={label ? undefined : '切换显示'}
+      aria-describedby={descId}
       onClick={() => onChange(!checked)}
       className={clsx(
         'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1',
@@ -51,6 +58,7 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
       )}
     >
       <span
+        aria-hidden="true"
         className={clsx(
           'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
           checked ? 'translate-x-4' : 'translate-x-0.5'
@@ -64,8 +72,8 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
   return (
     <div className="flex items-start justify-between gap-2 py-1.5">
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-gray-700">{label}</div>
-        {description && <div className="text-[10px] text-gray-400 mt-0.5">{description}</div>}
+        <div id={labelId} className="text-sm font-medium text-gray-700">{label}</div>
+        {description && <div id={descId} className="text-[10px] text-gray-400 mt-0.5">{description}</div>}
       </div>
       {toggle}
     </div>
@@ -73,7 +81,9 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
 }
 
 export function SettingsPanel() {
-  const { displaySettings, updateDisplaySettings, clearBrowserData, unhideAll } = useRelationshipStore();
+  useLang();
+  const { displaySettings, updateDisplaySettings, clearBrowserData, unhideAll, setLanguage, language } = useRelationshipStore();
+  const nodes = useRelationshipStore((s) => s.nodes);
   const collapsed = useRelationshipStore((s) => s.settingsPanelCollapsed);
   const setCollapsed = useRelationshipStore((s) => s.setSettingsPanelCollapsed);
   const [isAddingField, setIsAddingField] = useState(false);
@@ -84,10 +94,28 @@ export function SettingsPanel() {
 
   const { fieldOrder, customFields, customFieldVisibility, removedBuiltinFields } = displaySettings;
 
+  // 计算坐标系稀疏度滑块的上限：节点最大年龄差向上取5的倍数（最小不小于5）
+  const coordinateStepMax = useMemo(() => {
+    let minYear = Infinity, maxYear = -Infinity;
+    for (const n of nodes) {
+      if (n.data.birthDate) {
+        const y = parseInt(n.data.birthDate.split('-')[0], 10);
+        if (!isNaN(y)) {
+          if (y < minYear) minYear = y;
+          if (y > maxYear) maxYear = y;
+        }
+      }
+    }
+    if (!isFinite(minYear) || !isFinite(maxYear)) return 10;
+    const span = Math.max(0, maxYear - minYear);
+    const ceil5 = Math.ceil(span / 5) * 5;
+    return Math.max(5, ceil5);
+  }, [nodes]);
+
   // 获取可拖拽字段的元信息
   const getFieldMeta = (key: string): { label: string; toggleKey?: ToggleKey; isCustom: boolean; id?: string } => {
     const builtIn = BUILTIN_DRAGGABLE.find((f) => f.key === key);
-    if (builtIn) return { label: builtIn.label, toggleKey: builtIn.toggleKey, isCustom: false };
+    if (builtIn) return { label: t(builtIn.label), toggleKey: builtIn.toggleKey, isCustom: false };
     const custom = customFields.find((f) => f.id === key);
     if (custom) return { label: custom.label, isCustom: true, id: custom.id };
     return { label: key, isCustom: false };
@@ -169,35 +197,84 @@ export function SettingsPanel() {
       <button
         onClick={() => setCollapsed(false)}
         className="absolute top-16 right-4 z-50 flex items-center gap-1 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700"
-        title="展开设置面板"
+        aria-label={t('expandSettings')}
       >
-        <Settings className="w-4 h-4" />
-        <ChevronLeft className="w-4 h-4" />
+        <Settings className="w-4 h-4" aria-hidden="true" />
+        <ChevronLeft className="w-4 h-4" aria-hidden="true" />
       </button>
     );
   }
 
   return (
-    <div className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-50">
+    <div
+      role="region"
+      aria-label={t('settingsPanelDesc')}
+      className="absolute top-16 right-4 w-72 bg-white shadow-xl rounded-xl border border-gray-200 flex flex-col overflow-hidden max-h-[calc(100vh-5rem)] z-50"
+    >
       <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-gray-50">
         <div className="flex items-center gap-2">
-          <Settings className="w-4 h-4 text-gray-600" />
-          <h2 className="font-semibold text-gray-800">全局设置</h2>
+          <Settings className="w-4 h-4 text-gray-600" aria-hidden="true" />
+          <h2 className="font-semibold text-gray-800">{t('settingsTitle')}</h2>
         </div>
         <button
           onClick={() => setCollapsed(true)}
           className="p-1 hover:bg-gray-200 rounded-full text-gray-500"
-          title="收起设置面板"
+          aria-label={t('collapseSettings')}
         >
-          <ChevronRight className="w-4 h-4" />
+          <ChevronRight className="w-4 h-4" aria-hidden="true" />
         </button>
       </div>
 
       <div className="p-4 overflow-y-auto flex-1">
-        <p className="text-xs text-gray-400 mb-3">控制族谱节点的显示内容，更改即时生效。</p>
+        <p className="text-xs text-gray-400 mb-3">{t('settingsPanelDesc')}</p>
+
+        {/* 语言切换滑块（分段滑块：中文 / EN 在同一行，滑块滑动切换） */}
+        <div className="mb-2 pl-3 pr-1 pt-1 pb-1 bg-blue-50 rounded-md border border-blue-100">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-medium text-gray-800 shrink-0">{t('language')}</div>
+            <div
+              role="radiogroup"
+              aria-label={t('language')}
+              className="relative flex rounded-lg bg-gray-200 p-0.5 text-xs font-medium shrink-0 w-40"
+            >
+            {/* 滑动高亮块 */}
+            <span
+              aria-hidden="true"
+              className={clsx(
+                'absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-0.25rem)] rounded-md bg-white shadow transition-transform duration-200',
+                language === 'en' ? 'translate-x-[calc(100%+0.25rem)]' : 'translate-x-0'
+              )}
+            />
+            <button
+              type="button"
+              role="radio"
+              aria-checked={language === 'zh'}
+              onClick={() => setLanguage('zh')}
+              className={clsx(
+                'relative z-10 flex-1 rounded-md py-1.5 text-center transition-colors',
+                language === 'zh' ? 'text-blue-600' : 'text-gray-500'
+              )}
+            >
+              中文
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={language === 'en'}
+              onClick={() => setLanguage('en')}
+              className={clsx(
+                'relative z-10 flex-1 rounded-md py-1.5 text-center transition-colors',
+                language === 'en' ? 'text-blue-600' : 'text-gray-500'
+              )}
+            >
+              EN
+            </button>
+          </div>
+          </div>
+        </div>
 
         {/* 基本信息 */}
-        <CollapsibleSection title="基本信息" defaultOpen={true} className="!mt-0 !pt-0 !border-t-0" storageKey="settings:basic">
+        <CollapsibleSection title={t('basicInfo')} defaultOpen={true} className="!mt-0 !pt-0 !border-t-0" storageKey="settings:basic">
           <ul className="space-y-0.5 mb-2">
             {FIXED_FIELDS.map((item) => (
               <li
@@ -205,8 +282,8 @@ export function SettingsPanel() {
                 className="flex items-center justify-between gap-3 p-2 rounded-md hover:bg-gray-50 transition-colors"
               >
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-gray-800">{item.label}</div>
-                  {item.hint && <div className="text-[10px] text-gray-400">{item.hint}</div>}
+                  <div className="text-sm font-medium text-gray-800">{t(item.label)}</div>
+                  {item.hintKey && <div className="text-[10px] text-gray-400">{t(item.hintKey)}</div>}
                 </div>
                 {item.toggleKey ? (
                   <Toggle
@@ -216,15 +293,15 @@ export function SettingsPanel() {
                     }
                   />
                 ) : (
-                  <span className="text-[10px] text-gray-300">始终显示</span>
+                  <span className="text-[10px] text-gray-300">{t('alwaysShow')}</span>
                 )}
               </li>
             ))}
           </ul>
           <div className="p-2.5 bg-gray-50 rounded-md border border-gray-100">
             <Toggle
-              label="离世日期代替出生日期"
-              description="离世者的显示由「出生年月·年龄」变为「年龄·死亡年月」，且年龄截止到离世时"
+              label={t('deathDateReplaceBirth')}
+              description={t('deathDateReplaceBirthDesc')}
               checked={displaySettings.deathDateReplaceBirth}
               onChange={(v) => updateDisplaySettings({ deathDateReplaceBirth: v })}
             />
@@ -232,7 +309,7 @@ export function SettingsPanel() {
         </CollapsibleSection>
 
         {/* 可排序属性 */}
-        <CollapsibleSection title="可排序属性" defaultOpen={true} hint="（拖动排序）" storageKey="settings:sortable">
+        <CollapsibleSection title={t('sortableProps')} defaultOpen={true} hint={t('dragHint')} storageKey="settings:sortable">
           <ul className="space-y-0.5">
             {fieldOrder.map((key, i) => {
               const meta = getFieldMeta(key);
@@ -244,6 +321,7 @@ export function SettingsPanel() {
                   onDragOver={(e) => { e.preventDefault(); setDragOverIndex(i); }}
                   onDrop={() => onDrop(i)}
                   onDragEnd={onDragEnd}
+                  aria-label={`${t('sortableProps')}：${meta.label}${isFieldVisible(key) ? t('alwaysShow') : t('hideToggle')}`}
                   className={clsx(
                     'flex items-center justify-between gap-2 p-2 rounded-md hover:bg-gray-50 transition-colors',
                     dragOverIndex === i && draggedIndex !== i && 'border-t-2 border-blue-400',
@@ -251,7 +329,11 @@ export function SettingsPanel() {
                   )}
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <GripVertical className="w-4 h-4 text-gray-300 cursor-grab shrink-0" />
+                    <GripVertical
+                      className="w-4 h-4 text-gray-300 cursor-grab shrink-0"
+                      aria-hidden="true"
+                      // 拖拽为可选交互，操作说明在 hint 中已提供，此处标记为装饰性
+                    />
                     <span className="text-sm font-medium text-gray-800 truncate">{meta.label}</span>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
@@ -259,17 +341,17 @@ export function SettingsPanel() {
                       <button
                         onClick={() => handleRemoveField(meta.id!)}
                         className="p-1 text-gray-300 hover:text-red-500 transition-colors"
-                        title="删除自定义属性"
+                        aria-label={`删除自定义属性：${meta.label}`}
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                       </button>
                     ) : (
                       <button
                         onClick={() => handleRemoveBuiltinField(key)}
                         className="p-1 text-gray-300 hover:text-red-500 transition-colors"
-                        title="从详情面板移除此内置属性"
+                        aria-label={`从详情面板移除内置属性：${meta.label}`}
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                       </button>
                     )}
                     <Toggle
@@ -287,14 +369,17 @@ export function SettingsPanel() {
             {!isAddingField ? (
               <button
                 onClick={() => setIsAddingField(true)}
+                aria-label={t('addCustomField')}
                 className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-gray-300 text-gray-600 px-4 py-2 rounded-lg hover:border-blue-500 hover:text-blue-600 transition-colors text-sm font-medium"
               >
-                <Plus className="w-4 h-4" />
-                添加自定义属性
+                <Plus className="w-4 h-4" aria-hidden="true" />
+                {t('addCustomField')}
               </button>
             ) : (
               <div className="flex gap-2">
+                <label htmlFor="new-custom-field" className="sr-only">{t('customFieldName')}</label>
                 <input
+                  id="new-custom-field"
                   type="text"
                   autoFocus
                   value={newFieldLabel}
@@ -306,7 +391,7 @@ export function SettingsPanel() {
                       setNewFieldLabel('');
                     }
                   }}
-                  placeholder="属性名称（如：车牌号）"
+                  placeholder={t('customFieldPlaceholder')}
                   className="flex-1 min-w-0 px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
                 <button
@@ -314,7 +399,7 @@ export function SettingsPanel() {
                   disabled={!newFieldLabel.trim()}
                   className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 shrink-0"
                 >
-                  添加
+                  {t('add')}
                 </button>
                 <button
                   onClick={() => {
@@ -323,7 +408,7 @@ export function SettingsPanel() {
                   }}
                   className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 rounded text-sm hover:bg-gray-50 shrink-0"
                 >
-                  取消
+                  {t('cancel')}
                 </button>
               </div>
             )}
@@ -334,10 +419,11 @@ export function SettingsPanel() {
             <div className="mt-3">
               <button
                 onClick={() => setShowRemovedFields(!showRemovedFields)}
+                aria-expanded={showRemovedFields}
                 className="w-full flex items-center justify-between text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
               >
-                <span>已移除的内置属性（{removedBuiltinFields.length}）</span>
-                <span>{showRemovedFields ? '收起' : '展开'}</span>
+                <span>{t('removedBuiltinFields')}（{removedBuiltinFields.length}）</span>
+                <span aria-hidden="true">{showRemovedFields ? t('collapseSettings') : t('expandSettings')}</span>
               </button>
               {showRemovedFields && (
                 <ul className="space-y-0.5 mt-1">
@@ -348,12 +434,12 @@ export function SettingsPanel() {
                         key={key}
                         className="flex items-center justify-between gap-2 p-1.5 rounded-md bg-gray-50"
                       >
-                        <span className="text-xs text-gray-500 truncate">{meta?.label || key}</span>
+                        <span className="text-xs text-gray-500 truncate">{meta ? t(meta.label) : key}</span>
                         <button
                           onClick={() => handleRestoreBuiltinField(key)}
                           className="text-xs text-blue-600 hover:text-blue-700 shrink-0"
                         >
-                          恢复
+                          {t('restore')}
                         </button>
                       </li>
                     );
@@ -365,34 +451,76 @@ export function SettingsPanel() {
         </CollapsibleSection>
 
         {/* 关系与显示（默认隐藏） */}
-        <CollapsibleSection title="关系与显示" defaultOpen={false} storageKey="settings:relation">
+        <CollapsibleSection title={t('relationAndDisplay')} defaultOpen={false} storageKey="settings:relation">
           <Toggle
-            label="连线显示亲属关系"
-            description="在父子连线上标注关系（父·子 / 子·父 等），便于区分长辈与晚辈"
+            label={t('showEdgeRelationship')}
+            description={t('showEdgeRelationshipDesc')}
             checked={displaySettings.showEdgeRelationship}
             onChange={(v) => updateDisplaySettings({ showEdgeRelationship: v })}
           />
           <Toggle
-            label="断开关系后变灰"
-            description="断开关系后，将断开一侧（含长辈）的方框显示为灰色（连线始终变为虚线）"
+            label={t('showGrayOnDisconnect')}
+            description={t('showGrayOnDisconnectDesc')}
             checked={displaySettings.showGrayOnDisconnect}
             onChange={(v) => updateDisplaySettings({ showGrayOnDisconnect: v })}
           />
           <Toggle
-            label="显示画布提示"
-            description="在画布左上角显示操作提示（如「点击节点查看详情」、连线模式状态等）"
+            label={t('showCanvasHint')}
+            description={t('showCanvasHintDesc')}
             checked={displaySettings.showCanvasHint}
             onChange={(v) => updateDisplaySettings({ showCanvasHint: v })}
           />
           <Toggle
-            label="显示关系统计徽章"
-            description="在每个角色方框底部显示「父母 x · 子女 x · 爱人 x · 其他 xx」统计"
+            label={t('showStatsBadge')}
+            description={t('showStatsBadgeDesc')}
             checked={displaySettings.showStatsBadge}
             onChange={(v) => updateDisplaySettings({ showStatsBadge: v })}
           />
+          <Toggle
+            label={t('allowVerticalMove')}
+            description={t('allowVerticalMoveDesc')}
+            checked={displaySettings.allowVerticalMove}
+            onChange={(v) => {
+              updateDisplaySettings({ allowVerticalMove: v });
+              if (v) {
+                alert(t('verticalMoveAlert'));
+              }
+            }}
+          />
+          <Toggle
+            label={t('showCoordinateSystem')}
+            description={t('showCoordinateSystemDesc')}
+            checked={displaySettings.showCoordinateSystem}
+            onChange={(v) => updateDisplaySettings({ showCoordinateSystem: v })}
+          />
+          {displaySettings.showCoordinateSystem && (
+            <div className="mt-2 p-2.5 bg-gray-50 rounded-md border border-gray-100">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium text-gray-700">{t('coordinateDensity')}</span>
+                <span className="text-xs font-medium text-blue-600 tabular-nums">
+                  {t('everyNYears', { n: displaySettings.coordinateLineStep })}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={5}
+                max={coordinateStepMax}
+                step={5}
+                value={Math.min(displaySettings.coordinateLineStep, coordinateStepMax)}
+                onChange={(e) => updateDisplaySettings({ coordinateLineStep: parseInt(e.target.value, 10) })}
+                aria-label={`${t('coordinateDensity')}，${t('everyNYears', { n: displaySettings.coordinateLineStep })}`}
+                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+              />
+              <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+                <span>{`5${t('dense')}`}</span>
+                <span>{`${coordinateStepMax}${t('sparse')}`}</span>
+              </div>
+              <p className="text-[10px] text-gray-400 mt-1">{t('coordinateHint')}</p>
+            </div>
+          )}
           <div className="mt-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-gray-700">垂直间距比例</span>
+              <span className="text-sm font-medium text-gray-700">{t('verticalGapScale')}</span>
               <span className="text-xs font-medium text-blue-600 tabular-nums">
                 {displaySettings.verticalGapScale.toFixed(2)}x
               </span>
@@ -406,6 +534,7 @@ export function SettingsPanel() {
               onChange={(e) =>
                 updateDisplaySettings({ verticalGapScale: parseFloat(e.target.value) })
               }
+              aria-label={`${t('verticalGapScale')}，${(displaySettings.verticalGapScale.toFixed(2))}x`}
               className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
             />
             <div className="flex justify-between text-[10px] text-gray-400 mt-1">
@@ -413,16 +542,16 @@ export function SettingsPanel() {
               <span>1.0x</span>
               <span>3.0x</span>
             </div>
-            <p className="text-[10px] text-gray-400 mt-1">在系统自动计算的高度差基础上进行比例缩放。</p>
+            <p className="text-[10px] text-gray-400 mt-1">{t('verticalGapHint')}</p>
           </div>
         </CollapsibleSection>
 
         {/* 数据存储（不隐藏，含危险操作需常驻可见） */}
         <div className="mt-4 pt-4 border-t border-gray-200">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">数据存储</h3>
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{t('dataStorage')}</h3>
           <Toggle
-            label="在浏览器中保存数据"
-            description="开启后，所有数据（含缩放、位置、设置）自动保存到浏览器，下次打开自动恢复"
+            label={t('persistToBrowser')}
+            description={t('persistToBrowserDesc')}
             checked={displaySettings.persistToBrowser}
             onChange={(v) => updateDisplaySettings({ persistToBrowser: v })}
           />
@@ -430,19 +559,19 @@ export function SettingsPanel() {
             onClick={() => unhideAll()}
             className="mt-3 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-amber-600 border border-amber-300 rounded-md hover:bg-amber-50 transition-colors"
           >
-            <EyeOff className="w-3.5 h-3.5" />
-            全部取消隐藏
+            <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
+            {t('unhideAll')}
           </button>
           <button
             onClick={() => {
-              if (confirm('确定清除浏览器中保存的所有数据吗？此操作不可恢复，将恢复到默认族谱。')) {
+              if (confirm(t('clearBrowserDataConfirm'))) {
                 clearBrowserData();
               }
             }}
             className="mt-3 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-red-600 border border-red-300 rounded-md hover:bg-red-50 transition-colors"
           >
-            <Trash2 className="w-3.5 h-3.5" />
-            清除浏览器数据
+            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+            {t('clearBrowserData')}
           </button>
         </div>
       </div>

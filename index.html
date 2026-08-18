@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Relationship</title>
+    <title>Relationship Graph-人际关系图谱</title>
+    <meta name="description" content="一个以「自我」为中心、基于 React 和 React Flow 构建的交互式人际/家族关系图谱应用。数据完全保存在本机，无需联网即可使用。" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <script>
       // Protect window.fetch from being overwritten by polyfills (e.g., whatwg-fetch used by html-to-image)
@@ -21,6 +22,8 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- 屏幕阅读器实时播报区域：操作提示会通过此区域朗读 -->
+    <div id="a11y-live-region" aria-live="polite" aria-atomic="true" class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
