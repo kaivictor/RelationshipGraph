@@ -44,6 +44,7 @@ const edgeTypes = {
   spouse: SpouseEdge,
   'parent-child': ParentChildEdge,
   custom: CustomEdge,
+  'superior-subordinate': CustomEdge,
 };
 
 export default function Relationship() {
@@ -60,8 +61,6 @@ export default function Relationship() {
     onConnect,
     setSelectedNodeId,
     setSelectedEdgeId,
-    toggleNodeSelected,
-    applyMultiSelect,
     layoutGraph,
     exportData,
     importData,
@@ -84,8 +83,6 @@ export default function Relationship() {
       onConnect: s.onConnect,
       setSelectedNodeId: s.setSelectedNodeId,
       setSelectedEdgeId: s.setSelectedEdgeId,
-      toggleNodeSelected: s.toggleNodeSelected,
-      applyMultiSelect: s.applyMultiSelect,
       layoutGraph: s.layoutGraph,
       exportData: s.exportData,
       importData: s.importData,
@@ -237,7 +234,6 @@ export default function Relationship() {
   const longPressTimerRef = useRef<number | null>(null);
   const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
   const longPressTriggeredRef = useRef(false);
-  const longPressSavedIdsRef = useRef<string[]>([]);
 
   const { viewport: savedViewport, setViewport } = useRelationshipStore(
     useShallow((s) => ({ viewport: s.viewport, setViewport: s.setViewport }))
@@ -361,10 +357,12 @@ export default function Relationship() {
         if (e.key === 'ArrowDown') { e.preventDefault(); reactFlow.zoomOut({ duration: 200 }); return; }
       }
 
-      // 仅当画布锁定时，方向键用于选择相邻人物（未锁定时保留 ReactFlow 默认微调位置）
+      // 方向键：锁定时用于在人物间导航选择；未锁定时用于微调当前选中节点位置。
+      // 未锁定微调完全由 store 的 nudgeSelectedNodes 实现（基于 selectedNodeId + multiSelectedIds），
+      // 不再依赖 React Flow 受控的 selected，避免受控场景下「按几下就没变化」。
+      // 监听在捕获阶段（capture）执行，未锁定时 stopPropagation 阻止 React Flow 默认 nudge，避免双重移动。
       const s = rfStore.getState();
       const locked = !(s.nodesDraggable || s.nodesConnectable || s.elementsSelectable);
-      if (!locked) return;
 
       let dir: 'up' | 'down' | 'left' | 'right' | null = null;
       if (e.key === 'ArrowUp') dir = 'up';
@@ -373,11 +371,21 @@ export default function Relationship() {
       else if (e.key === 'ArrowRight') dir = 'right';
       if (!dir) return;
       e.preventDefault();
-      selectAdjacent(dir);
+
+      if (locked) {
+        selectAdjacent(dir);
+      } else {
+        const step = e.shiftKey ? 25 : 5;
+        const dx = dir === 'left' ? -step : dir === 'right' ? step : 0;
+        const dy = dir === 'up' ? -step : dir === 'down' ? step : 0;
+        useRelationshipStore.getState().nudgeSelectedNodes(dx, dy);
+        e.stopPropagation();
+      }
     };
 
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    // 捕获阶段监听：未锁定微调时可在 React Flow 的 document 监听器之前拦截，避免双重移动。
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
   }, [reactFlow, rfStore]);
 
   const onNodeClick = useCallback(
@@ -399,17 +407,14 @@ export default function Relationship() {
         }
         return;
       }
-      // 长按多选：恢复被单击覆盖的多选状态
+      // 长按多选：长按已在定时器内定稿（toggle + applyMultiSelect），此处忽略随之而来的 click
       if (longPressTriggeredRef.current) {
         longPressTriggeredRef.current = false;
-        const ids = [...longPressSavedIdsRef.current, node.id];
-        applyMultiSelect(ids);
-        longPressSavedIdsRef.current = [];
         return;
       }
       setSelectedNodeId(node.id);
     },
-    [setSelectedNodeId, connectionMode, clickNodeInConnectMode, applyMultiSelect]
+    [setSelectedNodeId, connectionMode, clickNodeInConnectMode]
   );
 
   // 长按多选：pointerdown 检测
@@ -423,14 +428,13 @@ export default function Relationship() {
 
     longPressStartRef.current = { x: e.clientX, y: e.clientY };
     longPressTriggeredRef.current = false;
-    longPressSavedIdsRef.current = [];
 
     longPressTimerRef.current = window.setTimeout(() => {
-      // 长按触发：保存当前已选中的节点 ID，然后切换该节点选中状态
-      longPressTriggeredRef.current = true;
+      // 长按触发：切换该节点的多选状态（驱动 multiSelectedIds），高亮由 store 直接渲染，
+      // 不再依赖 React Flow 的 selected，避免受控场景下多选失效。
       const state = useRelationshipStore.getState();
-      longPressSavedIdsRef.current = state.nodes.filter(n => n.selected).map(n => n.id);
-      state.toggleNodeSelected(nodeId);
+      state.toggleMultiSelect(nodeId);
+      longPressTriggeredRef.current = true;
     }, 500);
   }, [connectionMode]);
 
@@ -815,6 +819,7 @@ export default function Relationship() {
                   { key: 'auto', label: tt('自动'), desc: tt('年龄差>15 父母子女，否则爱人') },
                   { key: 'parent-child', label: tt('父母子女'), desc: tt('A为长辈，B为晚辈') },
                   { key: 'spouse', label: tt('爱人'), desc: tt('不限年龄性别') },
+                  { key: 'superior-subordinate', label: tt('上下级'), desc: tt('A为上级，B为下级（有向）') },
                 ] as const).map((opt) => (
                   <button
                     key={opt.key}

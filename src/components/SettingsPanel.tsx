@@ -230,12 +230,12 @@ export function SettingsPanel() {
 
         {/* 语言切换滑块（分段滑块：中文 / EN 在同一行，滑块滑动切换） */}
         <div className="mb-2 pl-3 pr-1 pt-1 pb-1 bg-blue-50 rounded-md border border-blue-100">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center justify-between gap-2">
             <div className="text-sm font-medium text-gray-800 shrink-0">{t('language')}</div>
             <div
               role="radiogroup"
               aria-label={t('language')}
-              className="relative flex rounded-lg bg-gray-200 p-0.5 text-xs font-medium shrink-0 w-40"
+              className="relative flex rounded-lg bg-gray-200 p-0.5 text-xs font-medium shrink-0 w-30"
             >
             {/* 滑动高亮块 */}
             <span
@@ -476,6 +476,45 @@ export function SettingsPanel() {
             checked={displaySettings.showStatsBadge}
             onChange={(v) => updateDisplaySettings({ showStatsBadge: v })}
           />
+          {displaySettings.showStatsBadge && (
+            <div className="pl-1">
+              <label className="block text-xs font-medium text-gray-500 mb-1">{t('statsBadgeMode')}</label>
+              <div
+                role="radiogroup"
+                aria-label={t('statsBadgeMode')}
+                className="flex rounded-lg bg-gray-200 p-0.5 text-xs"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={displaySettings.statsBadgeMode === 'family'}
+                  onClick={() => updateDisplaySettings({ statsBadgeMode: 'family' })}
+                  className={
+                    'flex-1 px-2 text-[10px] py-1.5 rounded-md font-medium transition-colors ' +
+                    (displaySettings.statsBadgeMode === 'family'
+                      ? 'bg-white text-gray-800 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700')
+                  }
+                >
+                  {t('statsBadgeModeFamily')}
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={displaySettings.statsBadgeMode === 'hierarchy'}
+                  onClick={() => updateDisplaySettings({ statsBadgeMode: 'hierarchy' })}
+                  className={
+                    'flex-1 px-2 text-[10px] py-1.5 rounded-md font-medium transition-colors ' +
+                    (displaySettings.statsBadgeMode === 'hierarchy'
+                      ? 'bg-white text-gray-800 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700')
+                  }
+                >
+                  {t('statsBadgeModeHierarchy')}
+                </button>
+              </div>
+            </div>
+          )}
           <Toggle
             label={t('allowVerticalMove')}
             description={t('allowVerticalMoveDesc')}

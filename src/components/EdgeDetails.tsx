@@ -145,10 +145,12 @@ export function EdgeDetails() {
 
   const edge = useMemo(() => edges.find((e) => e.id === selectedEdgeId), [edges, selectedEdgeId]);
 
-  // 切换选中的关系时，重置端点「修改」展开状态
+  // 切换选中的关系时，重置端点「修改」展开状态，并初始化自定义称谓草稿
   useEffect(() => {
     setEditingEnd(null);
-  }, [selectedEdgeId]);
+    const e = edges.find((ed) => ed.id === selectedEdgeId);
+    setCustomLabelDraft((e?.data as EdgeData | undefined)?.customLabel || '');
+  }, [selectedEdgeId, edges]);
 
   if (!edge) {
     // 边已被删除或不选中：返回 null，由 App 切回默认面板
@@ -178,6 +180,11 @@ export function EdgeDetails() {
     if (edgeType === 'spouse') {
       return `${sName}  ${tt('与')}  ${tName}  ${tt('是爱人')}`;
     }
+    if (edgeType === 'superior-subordinate') {
+      // 有向：source=上级，target=下级；支持自定义称谓（如"导师""汇报对象"）
+      const word = customLabel || tt('上级');
+      return `${sName}  ${tt('是')}  ${tName}  ${tt('的')} ${word}`;
+    }
     const label = customLabel || tt('自定义关系');
     return `${sName}${tt('与')}${tName}${tt('是')}${label}${tt('关系')}`;
   };
@@ -186,7 +193,7 @@ export function EdgeDetails() {
     setSelectedEdgeId(null);
   };
 
-  const handleTypeChange = (newType: 'parent-child' | 'spouse' | 'custom') => {
+  const handleTypeChange = (newType: 'parent-child' | 'spouse' | 'custom' | 'superior-subordinate') => {
     if (newType === 'custom') {
       // 切到自定义时使用当前草稿或默认值
       updateEdgeType(edge.id, 'custom', customLabelDraft || customLabel || '自定义');
@@ -267,12 +274,13 @@ export function EdgeDetails() {
           <select
             aria-label={tt('关系类型')}
             value={edgeType}
-            onChange={(e) => handleTypeChange(e.target.value as 'parent-child' | 'spouse' | 'custom')}
+            onChange={(e) => handleTypeChange(e.target.value as 'parent-child' | 'spouse' | 'custom' | 'superior-subordinate')}
             className="shrink-0 px-2 py-1.5 border border-gray-300 rounded-md text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="parent-child">{tt('父子/母子')}</option>
             <option value="spouse">{tt('爱人')}</option>
             <option value="custom">{tt('自定义')}</option>
+            <option value="superior-subordinate">{tt('上下级')}</option>
           </select>
           {edgeType === 'custom' && (
             <input
@@ -284,6 +292,20 @@ export function EdgeDetails() {
                 if (v) updateEdgeType(edge.id, 'custom', v);
               }}
               placeholder={customLabel ? `${tt('当前：')}${customLabel}` : tt('如：同学、同事、朋友')}
+              className="flex-1 min-w-0 px-2.5 py-1.5 border border-gray-300 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          )}
+          {edgeType === 'superior-subordinate' && (
+            <input
+              type="text"
+              value={customLabelDraft}
+              onChange={(e) => {
+                setCustomLabelDraft(e.target.value);
+                const v = e.target.value.trim();
+                updateEdgeType(edge.id, 'superior-subordinate', v);
+              }}
+              placeholder={customLabel ? `${tt('当前：')}${customLabel}` : tt('如：导师、汇报对象')}
+              aria-label={tt('自定义上下级称谓')}
               className="flex-1 min-w-0 px-2.5 py-1.5 border border-gray-300 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           )}

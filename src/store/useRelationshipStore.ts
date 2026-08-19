@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+﻿import { create } from 'zustand';
 import {
   Connection,
   Edge,
@@ -21,6 +21,264 @@ import {
   type ExportData,
 } from '../utils/dataSerializer';
 import { type Language } from '../i18n';
+
+// ===== 聚类式分区（仅决定每个节点落在哪一"列/区块"，Y 轴仍由出生年月决定）=====
+type ClusterKind = 'relative' | 'superior' | 'custom' | 'none';
+// 区块从左到右的整体排列顺序（也是 X 上的大列）
+const CLUSTER_ORDER: ClusterKind[] = ['relative', 'superior', 'custom'];
+const CLUSTER_GAP = 120;  // 不同关系类别区块之间的水平间距（像素），小间距让相关列紧邻
+const NODE_WIDTH = 200;   // 节点实际宽度（列内推挤与列宽计算使用）
+
+// 边类型 → 所属聚类
+function classifyEdgeType(type: unknown): ClusterKind {
+  if (type === 'parent-child' || type === 'spouse') return 'relative';
+  if (type === 'superior-subordinate') return 'superior';
+  if (type === 'custom') return 'custom';
+  return 'none';
+}
+
+// 计算每个节点归属的聚类区块：按其在三类关系中的度数，归入度数最多的主簇
+// （并列时优先级：亲戚 > 上下级 > 其他；无任何关系则归 'none'，作为孤立节点处理）
+function computeClusterOf(nodes: PersonNode[], edges: Edge[]): Map<string, ClusterKind> {
+  const degree = new Map<string, { r: number; s: number; c: number }>();
+  nodes.forEach((n) => degree.set(n.id, { r: 0, s: 0, c: 0 }));
+  edges.forEach((e) => {
+    const k = classifyEdgeType(e.data?.type);
+    if (k === 'none') return;
+    const inc = (id?: string) => {
+      const d = id ? degree.get(id) : undefined;
+      if (!d) return;
+      if (k === 'relative') d.r++;
+      else if (k === 'superior') d.s++;
+      else d.c++;
+    };
+    inc(e.source);
+    inc(e.target);
+  });
+
+  const kindOf = new Map<string, ClusterKind>();
+  nodes.forEach((n) => {
+    const d = degree.get(n.id)!;
+    const max = Math.max(d.r, d.s, d.c);
+    if (max === 0) kindOf.set(n.id, 'none');
+    else if (d.r === max) kindOf.set(n.id, 'relative');
+    else if (d.s === max) kindOf.set(n.id, 'superior');
+    else kindOf.set(n.id, 'custom');
+  });
+  return kindOf;
+}
+// ===== 聚类分区结束 =====
+
+// 把同区块节点按 Y 顺序放入"车道（lane）"：每个车道内节点竖直不重叠，
+// 车道从左到右依次排开。这样同列内 Y 相近的夫妻/同年节点自然错成并排子列，
+// 水平展开最小，列内不重叠。
+// 同区块节点做"对半横推"消除 Y 相近导致的重叠：自然错落（不是左对齐），
+// 不产生跨列越界（调用方已按区块分组隔离）。nodeHeight 用于判定重叠。
+function resolveColumnOverlaps(
+  nodes: PersonNode[],
+  kindOf?: Map<string, ClusterKind> | null,
+  nodeHeight = 160,
+): PersonNode[] {
+  // 调用方已按区块分组，这里只需在同列内对半横推消除 Y 相近重叠
+  const result = nodes.map(n => ({ ...n, position: { ...n.position } }));
+
+  let hasOverlap = true;
+  let iterations = 0;
+  while (hasOverlap && iterations < 200) {
+    hasOverlap = false;
+    for (let i = 0; i < result.length; i++) {
+      for (let j = i + 1; j < result.length; j++) {
+        const n1 = result[i];
+        const n2 = result[j];
+        const dx = n1.position.x - n2.position.x;
+        const dy = n1.position.y - n2.position.y;
+        if (Math.abs(dx) < NODE_WIDTH && Math.abs(dy) < nodeHeight) {
+          hasOverlap = true;
+          const pushDist = (NODE_WIDTH - Math.abs(dx)) / 2 + 5;
+          if (n1.position.x >= n2.position.x) {
+            n1.position.x += pushDist;
+            n2.position.x -= pushDist;
+          } else {
+            n1.position.x -= pushDist;
+            n2.position.x += pushDist;
+          }
+        }
+      }
+    }
+    iterations++;
+  }
+  return result;
+}
+
+// 把各区块作为独立列：先列内推挤，再按动态顺序让每列起点紧接前一列（列宽自适应），
+// 保证列间不穿插、列内不重叠。
+function applyClusterColumns(
+  nodes: PersonNode[],
+  kindOf: Map<string, ClusterKind> | null,
+  order: ClusterKind[],
+  selfId?: string,
+): PersonNode[] {
+  const blockOf = (n: PersonNode): ClusterKind => (kindOf ? kindOf.get(n.id) ?? 'none' : 'none');
+
+  // 1) 按区块分组，每组内部独立从 0 推挤，互不干扰（绝不发生跨列混排）
+  const groups = new Map<ClusterKind, PersonNode[]>();
+  nodes.forEach(n => {
+    const b = blockOf(n);
+    if (!groups.has(b)) groups.set(b, []);
+    groups.get(b)!.push({ ...n, position: { ...n.position, x: 0 } });
+  });
+
+  const colWidth = new Map<ClusterKind, number>();
+  const spreadByBlock = new Map<ClusterKind, PersonNode[]>();
+  groups.forEach((group, b) => {
+    // 列内对半推挤（自然错落），随后把组内最小 X 归零，列宽按归零后最大右边界算
+    let spread = resolveColumnOverlaps(group, kindOf, 160);
+    // 把【自己】贴到本列左边缘（靠近相邻的簇），使跨列连线最短；
+    // 若与同列节点重叠，则把冲突的兄弟向右推（扩展列宽，不影响其它节点的自然散开）
+    if (selfId) {
+      const pinSelf = (g: PersonNode[]) => {
+        const selfNode = g.find(n => n.id === selfId);
+        if (!selfNode) return;
+        const minX = Math.min(...g.map(n => n.position.x));
+        selfNode.position.x = minX;
+        for (let iter = 0; iter < 100; iter++) {
+          let overlap = false;
+          for (const other of g) {
+            if (other === selfNode) continue;
+            const dx = selfNode.position.x - other.position.x;
+            const dy = selfNode.position.y - other.position.y;
+            if (Math.abs(dx) < NODE_WIDTH && Math.abs(dy) < 160) {
+              overlap = true;
+              other.position.x = selfNode.position.x + NODE_WIDTH + 5;
+            }
+          }
+          if (!overlap) break;
+        }
+      };
+      pinSelf(spread);
+      // 钉 self 可能把兄弟推入他人，整体再推一次清理，然后重新钉 self
+      spread = resolveColumnOverlaps(spread, kindOf, 160);
+      pinSelf(spread);
+    }
+    const minRelX = spread.reduce((m, n) => Math.min(m, n.position.x), Infinity);
+    spread.forEach(n => { n.position.x -= minRelX; });
+    spreadByBlock.set(b, spread);
+    const w = spread.reduce((m, n) => Math.max(m, n.position.x + NODE_WIDTH), 0);
+    colWidth.set(b, w);
+  });
+
+  // 2) 按动态顺序累加每列起点 X
+  const colStart = new Map<ClusterKind, number>();
+  let cursor = 0;
+  for (const k of order) {
+    colStart.set(k, cursor);
+    cursor += (colWidth.get(k) ?? 0) + CLUSTER_GAP;
+  }
+  // 'none' 列放到最后
+  colStart.set('none', cursor);
+
+  // 3) 平移每列节点到其起点（组内已归零，列间留 CLUSTER_GAP，互不穿插）
+  const out: PersonNode[] = [];
+  spreadByBlock.forEach((group, b) => {
+    const start = colStart.get(b) ?? 0;
+    group.forEach(n => {
+      out.push({ ...n, position: { ...n.position, x: n.position.x + start } });
+    });
+  });
+  return out;
+}
+
+function applyRelativeYPositions(
+  nodes: PersonNode[],
+  gapScale: number = 1,
+  edges?: Edge[],
+): PersonNode[] {
+  if (nodes.length === 0) return nodes;
+
+  const MS_PER_YEAR = 1000 * 60 * 60 * 24 * 365.25;
+  const scale = gapScale > 0 ? gapScale : 1;
+
+  function getGapPixels(years: number) {
+    // 线性均匀：每年固定像素值，使坐标系均匀分布
+    if (years <= 0) return 0;
+    return years * 10 * scale; // 10px per year
+  }
+
+  // Group nodes by birthDate to ensure people with EXACT same birthDate have EXACT same Y
+  const uniqueDates = Array.from(new Set(nodes.map(n => n.data.birthDate || '1990-01'))).sort((a, b) => {
+    const timeA = new Date(a).getTime();
+    const timeB = new Date(b).getTime();
+    return (isNaN(timeA) ? 0 : timeA) - (isNaN(timeB) ? 0 : timeB);
+  });
+
+  const dateToY = new Map<string, number>();
+  let currentY = 0;
+  let previousTime = new Date(uniqueDates[0]).getTime();
+  if (isNaN(previousTime)) previousTime = 0;
+
+  dateToY.set(uniqueDates[0], currentY);
+
+  for (let i = 1; i < uniqueDates.length; i++) {
+    let currentTime = new Date(uniqueDates[i]).getTime();
+    if (isNaN(currentTime)) currentTime = previousTime;
+
+    const yearsDiff = (currentTime - previousTime) / MS_PER_YEAR;
+    currentY += getGapPixels(yearsDiff);
+
+    dateToY.set(uniqueDates[i], currentY);
+    previousTime = currentTime;
+  }
+
+  // X 轴策略（聚类分区 + 垂直主布局）：
+  // 1) 有 edges 时，按关系把节点归入"亲戚/上下级/其他"三大区块；
+  // 2) 每个区块自身是一列竖直布局（Y 仍由出生年月决定），区块之间在 X 上留大间距，
+  //    使同类关系聚在同一列、互不穿插，同时整体保持 ↕ 竖直观感；
+  // 3) 区块的左右顺序以【自己(isSelf)】为锚点：把【自己】直接相连的关系类型对应的
+  //    区块排在前面、紧挨【自己】所在列，避免从最左的【自己】拉出一条横跨全图的长线；
+  // 4) 无 edges 或无法归类时，回退为所有节点同一列（X=0）。
+  const kindOf = edges && edges.length ? computeClusterOf(nodes, edges) : null;
+
+  // 动态区块顺序：把【自己】直接相连的簇排在前面，【自己】所在簇紧随其后。
+  // 这样 self 位于两列交界处，跨列连线最短，同时避免从最左侧贯穿到最右侧。
+  const selfId = nodes.find((n) => n.data.isSelf)?.id;
+  const selfBlock = selfId && kindOf ? kindOf.get(selfId) ?? 'none' : 'none';
+  const selfKinds = new Set<ClusterKind>();
+  if (selfId && edges) {
+    edges.forEach((e) => {
+      if (e.source === selfId || e.target === selfId) {
+        const k = classifyEdgeType(e.data?.type);
+        if (k !== 'none') selfKinds.add(k);
+      }
+    });
+  }
+  const clusterOrder: ClusterKind[] = (() => {
+    if (selfKinds.size === 0 || selfBlock === 'none') return [...CLUSTER_ORDER];
+    // self 参与但非 self 所在簇 → 放最前；self 所在簇 → 紧随其后；其余 → 最后
+    const front = CLUSTER_ORDER.filter((k) => selfKinds.has(k) && k !== selfBlock);
+    const middle = [selfBlock];
+    const rest = CLUSTER_ORDER.filter((k) => !selfKinds.has(k) && k !== selfBlock);
+    return [...front, ...middle, ...rest];
+  })();
+
+  const nodesWithY = nodes.map(node => {
+    // 用户手动垂直拖动过的节点：保留其 Y，不重新计算
+    if (node.data.yOverridden) {
+      return node;
+    }
+    const next: PersonNode = {
+      ...node,
+      position: {
+        ...node.position,
+        x: 0, // 初始 X 归零，列内推挤与列定位交由 applyClusterColumns 处理
+        y: dateToY.get(node.data.birthDate || '1990-01') || 0
+      }
+    };
+    return next;
+  });
+
+  // 聚类分列：列内推挤消除同列重叠（如夫妻 Y 相近），列间按动态顺序累加起点避免穿插
+  return applyClusterColumns(nodesWithY, kindOf, clusterOrder, selfId);
+}
 
 // 从 URL 参数 ?lang=zh|en 读取初始语言；缺省时读取浏览器偏好
 export function getInitialLanguage(): Language {
@@ -73,7 +331,7 @@ export type PersonData = {
   name: string;
   namePinyin?: string;
   formerName?: string[]; // 多值，逗号连接展示
-  relationship: string; // 保持单值（系统计算/手动覆盖），但允许用“，”分隔多个
+  relationship: string; // 保持单值（系统计算/手动覆盖），但允许用"，"分隔多个
   popularName?: string[]; // 多值，逗号连接展示
   avatar: string;
   birthDate: string;
@@ -343,6 +601,8 @@ export function buildNodeAriaLabelVisible(
   const children: string[] = [];
   const spouses: string[] = [];
   const others: string[] = [];
+  const superiors: string[] = [];
+  const subordinates: string[] = [];
   for (const e of edgeList) {
     if (e.source !== id && e.target !== id) continue;
     const t = (e.data as EdgeData | undefined)?.type;
@@ -361,12 +621,33 @@ export function buildNodeAriaLabelVisible(
         const label = (e.data as EdgeData | undefined)?.customLabel;
         others.push(label ? `${nameById.get(other) || A('未知', 'unknown')}（${label}）` : (nameById.get(other) || A('未知', 'unknown')));
       }
+    } else if (t === 'superior-subordinate') {
+      // 有向：source=上级，target=下级
+      if (e.source === id) {
+        if (isVisiblePerson(e.target)) subordinates.push(nameById.get(e.target) || A('未知', 'unknown'));
+      } else if (e.target === id) {
+        if (isVisiblePerson(e.source)) superiors.push(nameById.get(e.source) || A('未知', 'unknown'));
+      }
     }
   }
-  if (parents.length) related.push({ role: A('父母', 'Parents'), names: parents });
-  if (children.length) related.push({ role: A('子女', 'Children'), names: children });
-  if (spouses.length) related.push({ role: A('爱人', 'Spouse'), names: spouses });
-  if (others.length) related.push({ role: A('其他', 'Other'), names: others });
+  // 根据统计徽章模式决定朗读维度
+  if (displaySettings.statsBadgeMode === 'hierarchy') {
+    if (superiors.length) related.push({ role: A('上级', 'Superior'), names: superiors });
+    if (subordinates.length) related.push({ role: A('下级', 'Subordinate'), names: subordinates });
+    const othersAll = [
+      ...parents.map((n) => `${n}（${A('父母', 'parent')}）`),
+      ...children.map((n) => `${n}（${A('子女', 'child')}）`),
+      ...spouses.map((n) => `${n}（${A('爱人', 'spouse')}）`),
+      ...others,
+    ];
+    if (othersAll.length) related.push({ role: A('其他', 'Other'), names: othersAll });
+  } else {
+    if (parents.length) related.push({ role: A('父母', 'Parents'), names: parents });
+    if (children.length) related.push({ role: A('子女', 'Children'), names: children });
+    if (spouses.length) related.push({ role: A('爱人', 'Spouse'), names: spouses });
+    const othersAll = [...superiors, ...subordinates, ...others];
+    if (othersAll.length) related.push({ role: A('其他', 'Other'), names: othersAll });
+  }
   if (related.length) {
     const relatedText = related
       .map((r) => `${r.role}：${r.names.join(join)}`)
@@ -431,6 +712,10 @@ export function buildEdgeAriaLabel(
     const customLabel = data?.customLabel || A('自定义关系', 'custom relation');
     relation = `${A('关系', 'relation')}：${customLabel}`;
     direction = '';
+  } else if (type === 'superior-subordinate') {
+    // 「上下级」关系有方向：source=上级，target=下级
+    relation = data?.disconnected ? A('上下级关系（已断开）', 'superior-subordinate (disconnected)') : A('上下级关系', 'superior-subordinate');
+    direction = `（${sourceName} ${A('是', 'is the')} ${targetName} ${A('的上级', "'s superior")}）`;
   } else {
     direction = '';
   }
@@ -476,6 +761,7 @@ export type DisplaySettings = {
   deathDateReplaceBirth: boolean; // 离世日期代替出生日期
   showCanvasHint: boolean; // 是否显示画布左上角提示
   showStatsBadge: boolean; // 是否在节点底部显示关系统计徽章
+  statsBadgeMode: 'family' | 'hierarchy'; // 徽章统计维度：family=父母/子女/爱人/其他，hierarchy=上级/下级/其他
   showCoordinateSystem: boolean; // 是否显示坐标系（以10年为单位显示浅色横线）
   allowVerticalMove: boolean; // 是否允许垂直拖动节点（开启后调整的角色将脱离年龄坐标系）
   coordinateLineStep: number; // 坐标系横线稀疏度：每 N 年一条（5年起步）
@@ -489,7 +775,7 @@ export type ViewportState = {
 
 // 边的数据类型
 export type EdgeData = {
-  type: 'spouse' | 'parent-child' | 'custom';
+  type: 'spouse' | 'parent-child' | 'custom' | 'superior-subordinate';
   disconnected?: boolean;
   collapsed?: boolean; // 隐藏状态（桥语义：概念上断开该边）
   customLabel?: string; // 自定义关系称谓（如同学、同事、朋友），相对于 source 端
@@ -546,6 +832,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   deathDateReplaceBirth: true,
   showCanvasHint: true,
   showStatsBadge: true,
+  statsBadgeMode: 'family',
   showCoordinateSystem: false,
   allowVerticalMove: false,
   coordinateLineStep: 10,
@@ -556,6 +843,7 @@ interface RelationshipState {
   edges: Edge[];
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
+  multiSelectedIds: Set<string>; // 长按多选集合（与单选 selectedNodeId 共存时用于高亮）
   displaySettings: DisplaySettings;
   grayedNodeIds: Set<string>;
   hiddenNodeIds: Set<string>; // 手动隐藏的节点集合（"隐藏此人"），自己不可隐藏
@@ -578,25 +866,27 @@ interface RelationshipState {
    * 返回的集合不含传入的 id 本身。
    */
   getDescendantsForCascade: (id: string) => string[];
-  addRelative: (sourceId: string, type: 'parent' | 'child' | 'spouse' | 'custom', data: PersonData, customLabel?: string) => void;
-  connectExisting: (sourceId: string, targetId: string, type: 'parent' | 'child' | 'spouse' | 'custom', customLabel?: string) => void;
+  addRelative: (sourceId: string, type: 'parent' | 'child' | 'spouse' | 'custom' | 'superior' | 'subordinate', data: PersonData, customLabel?: string) => void;
+  connectExisting: (sourceId: string, targetId: string, type: 'parent' | 'child' | 'spouse' | 'custom' | 'superior' | 'subordinate', customLabel?: string) => void;
   setSelectedNodeId: (id: string | null) => void;
   setSelectedEdgeId: (id: string | null) => void;
+  /** 长按多选：切换某节点在多选集合中的状态（不影响其他节点 / 单选） */
+  toggleMultiSelect: (id: string) => void;
+  /** 清空多选集合 */
+  clearMultiSelect: () => void;
+  /** 键盘微调：移动当前选中节点（单选 + 多选）的位置 */
+  nudgeSelectedNodes: (dx: number, dy: number) => void;
   // 全局设置面板的收起状态（提升到 store，避免组件卸载/重挂时丢失）
   settingsPanelCollapsed: boolean;
   setSettingsPanelCollapsed: (v: boolean) => void;
   // 连线点击悬浮菜单（提升到 store，便于跨组件关闭）
   edgeMenu: { edgeId: string; x: number; y: number } | null;
   setEdgeMenu: (v: { edgeId: string; x: number; y: number } | null) => void;
-  /** 切换某节点的选中状态（累加选择，不清除其他节点） */
-  toggleNodeSelected: (id: string) => void;
-  /** 设置多选：仅给定 ID 的节点为选中，同时更新 selectedNodeId 为最后一个 */
-  applyMultiSelect: (ids: string[]) => void;
   updateDisplaySettings: (patch: Partial<DisplaySettings>) => void;
   disconnectEdge: (edgeId: string) => void;
   reconnectEdge: (edgeId: string) => void;
-  /** 修改边的关系类型（parent-child/spouse/custom） */
-  updateEdgeType: (edgeId: string, newType: 'parent-child' | 'spouse' | 'custom', customLabel?: string) => void;
+  /** 修改边的关系类型（parent-child/spouse/custom/superior-subordinate） */
+  updateEdgeType: (edgeId: string, newType: 'parent-child' | 'spouse' | 'custom' | 'superior-subordinate', customLabel?: string) => void;
   /** 修改边的某一端节点（'source' 或 'target'） */
   updateEdgeEndpoint: (edgeId: string, end: 'source' | 'target', newNodeId: string) => void;
   /** 交换边的两端（source<->target），用于反转方向 */
@@ -637,10 +927,10 @@ interface RelationshipState {
   /** 增量导入人物（独立人物，无关系），返回新增节点数 */
   importPersonsIncremental: (persons: PersonData[]) => number;
   // 连线模式
-  connectionMode: 'off' | 'auto' | 'parent-child' | 'spouse' | 'custom';
+  connectionMode: 'off' | 'auto' | 'parent-child' | 'spouse' | 'custom' | 'superior-subordinate';
   connectionCustomLabel: string;
   connectFirstNodeId: string | null;
-  setConnectionMode: (mode: 'off' | 'auto' | 'parent-child' | 'spouse' | 'custom', customLabel?: string) => void;
+  setConnectionMode: (mode: 'off' | 'auto' | 'parent-child' | 'spouse' | 'custom' | 'superior-subordinate', customLabel?: string) => void;
   /** 连线模式：点击节点。若已有起点则建立关系并重置；否则记录起点。返回是否完成一次连线 */
   clickNodeInConnectMode: (nodeId: string) => { connected: boolean; edgeType?: string; reason?: string };
   resetConnectSelection: () => void;
@@ -666,6 +956,14 @@ const initialNodes: PersonNode[] = [
   { id: 'n10', type: 'person', position: { x: 0, y: 0 }, data: { name: '爱人', avatar: '', relationship: '爱人', birthDate: '2006-04', gender: 'female' } },
   { id: 'n11', type: 'person', position: { x: 0, y: 0 }, data: { name: '儿子', avatar: '', relationship: '儿子', birthDate: '2030-01', gender: 'male' } },
   { id: 'n12', type: 'person', position: { x: 0, y: 0 }, data: { name: '女儿', avatar: '', relationship: '女儿', birthDate: '2032-03', gender: 'female' } },
+  // 公司关系示例（上下级联系，有向，不按年龄推断）
+  { id: 'c1', type: 'person', position: { x: 0, y: 0 }, data: { name: '王总', namePinyin: 'Wang Zong', avatar: '', relationship: '总经理', birthDate: '1968-01', gender: 'male' } },
+  { id: 'c2', type: 'person', position: { x: 0, y: 0 }, data: { name: '李经理', namePinyin: 'Li Jingli', avatar: '', relationship: '技术部经理', birthDate: '1978-03', gender: 'male' } },
+  { id: 'c3', type: 'person', position: { x: 0, y: 0 }, data: { name: '赵经理', namePinyin: 'Zhao Jingli', avatar: '', relationship: '市场部经理', birthDate: '1979-05', gender: 'female' } },
+  { id: 'c4', type: 'person', position: { x: 0, y: 0 }, data: { name: '孙经理', namePinyin: 'Sun Jingli', avatar: '', relationship: '人事部经理', birthDate: '1977-07', gender: 'female' } },
+  { id: 'c5', type: 'person', position: { x: 0, y: 0 }, data: { name: '周工', namePinyin: 'Zhou Gong', avatar: '', relationship: '工程师', birthDate: '1992-02', gender: 'male' } },
+  { id: 'c6', type: 'person', position: { x: 0, y: 0 }, data: { name: '吴工', namePinyin: 'Wu Gong', avatar: '', relationship: '工程师', birthDate: '1993-08', gender: 'male' } },
+  { id: 'c7', type: 'person', position: { x: 0, y: 0 }, data: { name: '郑专员', namePinyin: 'Zheng ZhuanYuan', avatar: '', relationship: '市场专员', birthDate: '1994-04', gender: 'female' } },
 ];
 
 const initialEdges: Edge[] = [
@@ -687,6 +985,14 @@ const initialEdges: Edge[] = [
   { id: 'e-n10-n11', source: 'n10', target: 'n11', data: { type: 'parent-child' }, type: 'parent-child' },
   { id: 'e-self-n12', source: 'self', target: 'n12', data: { type: 'parent-child' }, type: 'parent-child' },
   { id: 'e-n10-n12', source: 'n10', target: 'n12', data: { type: 'parent-child' }, type: 'parent-child' },
+  // 公司上下级关系（source=上级, target=下级）
+  { id: 'e-c1-c2', source: 'c1', target: 'c2', data: { type: 'superior-subordinate' }, type: 'superior-subordinate' },
+  { id: 'e-c1-c3', source: 'c1', target: 'c3', data: { type: 'superior-subordinate' }, type: 'superior-subordinate' },
+  { id: 'e-c1-c4', source: 'c1', target: 'c4', data: { type: 'superior-subordinate' }, type: 'superior-subordinate' },
+  { id: 'e-c2-c5', source: 'c2', target: 'c5', data: { type: 'superior-subordinate' }, type: 'superior-subordinate' },
+  { id: 'e-c2-c6', source: 'c2', target: 'c6', data: { type: 'superior-subordinate' }, type: 'superior-subordinate' },
+  { id: 'e-c3-c7', source: 'c3', target: 'c7', data: { type: 'superior-subordinate' }, type: 'superior-subordinate' },
+  { id: 'e-self-c3', source: 'self', target: 'c3', data: { type: 'superior-subordinate', customLabel: '组长' }, type: 'superior-subordinate' },
 ];
 
 // 浏览器持久化 key
@@ -810,7 +1116,7 @@ function calcAgeFromBirth(birthDate: string, deathDate?: string): number | null 
 
 // 初始：尝试从浏览器加载，否则用默认数据
 const persisted = loadPersistedState();
-const initialNodesResolved = persisted ? normalizeNodes(persisted.nodes) : applyRelativeYPositions(normalizeNodes(initialNodes));
+const initialNodesResolved = persisted ? normalizeNodes(persisted.nodes) : applyRelativeYPositions(normalizeNodes(initialNodes), DEFAULT_DISPLAY_SETTINGS.verticalGapScale, initialEdges);
 const initialEdgesResolved = persisted ? persisted.edges : initialEdges;
 const initialDisplaySettings = persisted ? persisted.displaySettings : DEFAULT_DISPLAY_SETTINGS;
 const initialViewport = persisted ? persisted.viewport : { x: 0, y: 0, zoom: 1 };
@@ -828,94 +1134,6 @@ const initialFocusNodeId =
 // 首次加载（无持久化数据）时需要标记重新计算灰色节点
 const hasPersistedData = !!persisted;
 
-function resolveOverlaps(nodes: PersonNode[]): PersonNode[] {
-  const NODE_WIDTH = 200; // 160 width + 40 gap
-  const NODE_HEIGHT = 220; // accommodates name/gender + relationship + avatar + info + attrs
-  
-  let hasOverlap = true;
-  let iterations = 0;
-  const result = nodes.map(n => ({ ...n, position: { ...n.position } }));
-
-  while (hasOverlap && iterations < 100) {
-    hasOverlap = false;
-    for (let i = 0; i < result.length; i++) {
-      for (let j = i + 1; j < result.length; j++) {
-        const n1 = result[i];
-        const n2 = result[j];
-        const dx = n1.position.x - n2.position.x;
-        const dy = n1.position.y - n2.position.y;
-
-        if (Math.abs(dx) < NODE_WIDTH && Math.abs(dy) < NODE_HEIGHT) {
-          hasOverlap = true;
-          const pushDist = (NODE_WIDTH - Math.abs(dx)) / 2 + 5;
-          if (n1.position.x >= n2.position.x) {
-            n1.position.x += pushDist;
-            n2.position.x -= pushDist;
-          } else {
-            n1.position.x -= pushDist;
-            n2.position.x += pushDist;
-          }
-        }
-      }
-    }
-    iterations++;
-  }
-  return result;
-}
-
-function applyRelativeYPositions(nodes: PersonNode[], gapScale: number = 1): PersonNode[] {
-  if (nodes.length === 0) return nodes;
-
-  const MS_PER_YEAR = 1000 * 60 * 60 * 24 * 365.25;
-  const scale = gapScale > 0 ? gapScale : 1;
-
-  function getGapPixels(years: number) {
-    // 线性均匀：每年固定像素值，使坐标系均匀分布
-    if (years <= 0) return 0;
-    return years * 10 * scale; // 10px per year
-  }
-
-  // Group nodes by birthDate to ensure people with EXACT same birthDate have EXACT same Y
-  const uniqueDates = Array.from(new Set(nodes.map(n => n.data.birthDate || '1990-01'))).sort((a, b) => {
-    const timeA = new Date(a).getTime();
-    const timeB = new Date(b).getTime();
-    return (isNaN(timeA) ? 0 : timeA) - (isNaN(timeB) ? 0 : timeB);
-  });
-
-  const dateToY = new Map<string, number>();
-  let currentY = 0;
-  let previousTime = new Date(uniqueDates[0]).getTime();
-  if (isNaN(previousTime)) previousTime = 0;
-
-  dateToY.set(uniqueDates[0], currentY);
-
-  for (let i = 1; i < uniqueDates.length; i++) {
-    let currentTime = new Date(uniqueDates[i]).getTime();
-    if (isNaN(currentTime)) currentTime = previousTime;
-
-    const yearsDiff = (currentTime - previousTime) / MS_PER_YEAR;
-    currentY += getGapPixels(yearsDiff);
-    
-    dateToY.set(uniqueDates[i], currentY);
-    previousTime = currentTime;
-  }
-
-  const nodesWithY = nodes.map(node => {
-    // 用户手动垂直拖动过的节点：保留其 Y，不重新计算
-    if (node.data.yOverridden) {
-      return node;
-    }
-    return {
-      ...node,
-      position: {
-        ...node.position,
-        y: dateToY.get(node.data.birthDate || '1990-01') || 0
-      }
-    };
-  });
-
-  return resolveOverlaps(nodesWithY);
-}
 
 /**
  * 计算坐标系横线：从根出生年份（最早节点）起，每 step 年一条横线。
@@ -1172,6 +1390,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   edges: initialEdgesResolved,
   selectedNodeId: null,
   selectedEdgeId: null,
+  multiSelectedIds: new Set<string>(),
   displaySettings: initialDisplaySettings,
   grayedNodeIds: hasPersistedData
     ? computeGrayedNodes(initialNodesResolved, initialEdgesResolved, initialDisplaySettings.showGrayOnDisconnect)
@@ -1192,8 +1411,8 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   onNodesChange: (changes) => {
     const currentNodes = get().nodes;
     const allowVerticalMove = get().displaySettings.allowVerticalMove;
+    const multi = get().multiSelectedIds;
     // 关闭垂直移动时：强制锁定 Y，仅允许水平拖动
-    // 开启垂直移动时：自由拖动，拖动时标记节点 Y 已被覆盖，后续 applyRelativeYPositions 跳过
     const modifiedChanges = changes.map(change => {
       if (change.type === 'position' && change.position) {
         const node = currentNodes.find(n => n.id === change.id);
@@ -1211,19 +1430,51 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       return change;
     });
     const applied = applyNodeChanges(modifiedChanges, currentNodes) as PersonNode[];
-    // 收集本次拖动的节点 id（仅开启垂直移动时才标记）
+
+    // 计算本次被拖动节点（dragging）相对原位置的位移量
+    const deltas = new Map<string, { dx: number; dy: number }>();
+    for (const c of changes) {
+      if (c.type === 'position' && c.dragging && c.position) {
+        const node = currentNodes.find(n => n.id === c.id);
+        if (node) deltas.set(c.id, { dx: c.position.x - node.position.x, dy: c.position.y - node.position.y });
+      }
+    }
+
+    // 多选整体平移：若被拖动的节点属于多选集合，则同批选中的其他节点按相同位移一起移动
+    const moveSet = new Set<string>();
+    let moveDx = 0, moveDy = 0;
+    for (const [id, d] of deltas) {
+      if (multi.has(id)) {
+        for (const mid of multi) if (mid !== id) moveSet.add(mid);
+        moveDx = d.dx;
+        moveDy = d.dy;
+      }
+    }
+
+    let result = applied;
+    if (moveSet.size > 0) {
+      result = result.map(n => {
+        if (moveSet.has(n.id) && n.position) {
+          // 关闭垂直移动时锁定 Y（忽略垂直位移）
+          const ny = allowVerticalMove ? n.position.y + moveDy : n.position.y;
+          return { ...n, position: { x: n.position.x + moveDx, y: ny } };
+        }
+        return n;
+      });
+    }
+
+    // 标记被覆盖 Y 的节点（仅开启垂直移动时），用于后续布局跳过
     if (allowVerticalMove) {
       const draggedIds = new Set<string>();
       for (const c of changes) {
         if (c.type === 'position' && c.dragging && c.id) draggedIds.add(c.id);
       }
-      const finalNodes = draggedIds.size > 0
-        ? applied.map(n => draggedIds.has(n.id) ? { ...n, data: { ...n.data, yOverridden: true } } : n)
-        : applied;
-      set({ nodes: finalNodes });
-    } else {
-      set({ nodes: applied });
+      for (const id of moveSet) draggedIds.add(id);
+      if (draggedIds.size > 0) {
+        result = result.map(n => draggedIds.has(n.id) ? { ...n, data: { ...n.data, yOverridden: true } } : n);
+      }
     }
+    set({ nodes: result });
   },
 
   onEdgesChange: (changes) => {
@@ -1365,6 +1616,8 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     const isChild = type === 'child';
     const isSpouse = type === 'spouse';
     const isCustom = type === 'custom';
+    const isSuperior = type === 'superior'; // 当前节点为上级，新建节点为下级
+    const isSubordinate = type === 'subordinate'; // 当前节点为下级，新建节点为上级
 
     // Calculate position: Y is strictly based on birthDate, X is relative to source
     const position = {
@@ -1436,6 +1689,24 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
         data: { type: 'custom', customLabel: customLabel || '自定义' },
         type: 'custom',
       });
+    } else if (isSuperior) {
+      // 上下级关系（有向）：source(当前节点)=上级，target(新建节点)=下级，不传递血缘、不按年龄推断
+      newEdges.push({
+        id: `e-superior-${sourceId}-${newId}`,
+        source: sourceId,
+        target: newId,
+        data: { type: 'superior-subordinate' },
+        type: 'superior-subordinate',
+      });
+    } else if (isSubordinate) {
+      // 当前节点为下级，新建节点为上级
+      newEdges.push({
+        id: `e-superior-${newId}-${sourceId}`,
+        source: newId,
+        target: sourceId,
+        data: { type: 'superior-subordinate' },
+        type: 'superior-subordinate',
+      });
     }
 
     const newNodes = applyRelativeYPositions([...get().nodes, newNode], get().displaySettings.verticalGapScale);
@@ -1504,6 +1775,13 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       if (!exists(sourceId, targetId, 'custom')) {
         newEdges.push({ id: `e-custom-${sourceId}-${targetId}`, source: sourceId, target: targetId, data: { type: 'custom', customLabel: customLabel || '自定义' }, type: 'custom' });
       }
+    } else if (type === 'superior' || type === 'subordinate') {
+      // 上下级关系（有向）：type==='superior' 表示 source 为上级、target 为下级
+      const sId = type === 'superior' ? sourceId : targetId;
+      const tId = type === 'superior' ? targetId : sourceId;
+      if (!exists(sId, tId, 'superior-subordinate')) {
+        newEdges.push({ id: `e-superior-${sId}-${tId}`, source: sId, target: tId, data: { type: 'superior-subordinate' }, type: 'superior-subordinate' });
+      }
     }
 
     if (newEdges.length === 0) return;
@@ -1543,33 +1821,35 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   },
 
   setSelectedNodeId: (id) => {
+    // 节点的蓝色高亮由 PersonNode 直接读取 selectedNodeId（单选）与 multiSelectedIds（多选）渲染，
+    // 完全脱离 React Flow 受控的 nodes[].selected，避免受控场景下旧高亮残留 / 要点两次 等问题。
     if (id === null) {
-      // 关闭面板/取消选中：同步清除节点的蓝色边框（selected 视觉状态）
       set({
         selectedNodeId: null,
-        nodes: get().nodes.map(n => ({ ...n, selected: false })),
+        selectedEdgeId: null,
+        multiSelectedIds: new Set<string>(),
       });
     } else {
-      // 选中节点：清除边的选中，避免两个面板同时显示
       set({
         selectedNodeId: id,
         selectedEdgeId: null,
-        edges: get().edges.map(e => ({ ...e, selected: false })),
+        multiSelectedIds: new Set<string>(),
       });
     }
   },
-  setSelectedEdgeId: (id) => {
-    if (id === null) {
+  setSelectedEdgeId: (action) => {
+    if (action === null || action === undefined) {
       // 关闭面板/取消选中：同步清除边的选中状态
       set({
         selectedEdgeId: null,
         edges: get().edges.map(e => ({ ...e, selected: false })),
       });
     } else {
-      // 选中边：清除节点的选中，避免两个面板同时显示
+      // 选中边：清除节点选中（selectedNodeId + 多选集合），避免两个面板同时显示
       set({
-        selectedEdgeId: id,
+        selectedEdgeId: action,
         selectedNodeId: null,
+        multiSelectedIds: new Set<string>(),
         nodes: get().nodes.map(n => ({ ...n, selected: false })),
       });
     }
@@ -1579,23 +1859,39 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
 
   setEdgeMenu: (v) => set({ edgeMenu: v }),
 
-  // 长按多选：切换某节点选中状态（不影响其他节点）
-  toggleNodeSelected: (id) => {
+  // 长按多选：切换某节点在多选集合中的状态（独立于单选 selectedNodeId）
+  toggleMultiSelect: (id) => {
+    const next = new Set(get().multiSelectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
     set({
-      nodes: get().nodes.map(n => n.id === id ? { ...n, selected: !n.selected } : n),
+      multiSelectedIds: next,
       selectedEdgeId: null,
       edges: get().edges.map(e => ({ ...e, selected: false })),
+      // 若当前无单选，则把多选中的最后一个设为单选（驱动详情面板 / 键盘微调目标）
+      selectedNodeId: get().selectedNodeId ?? (next.size > 0 ? Array.from(next).slice(-1)[0] : null),
     });
   },
 
-  // 长按多选完成后：恢复多选状态（被 ReactFlow 单击覆盖后重新应用）
-  applyMultiSelect: (ids) => {
-    const idSet = new Set(ids);
+  // 清空多选集合
+  clearMultiSelect: () => set({ multiSelectedIds: new Set<string>() }),
+
+  /** 键盘微调：将当前选中（单选 + 多选）的节点按给定位移移动。直接修改 store 中的 position，
+   *  不依赖 React Flow 的 selected 状态，因此即使受控场景下 selected 被清理也能可靠工作。 */
+  nudgeSelectedNodes: (dx: number, dy: number) => {
+    const { selectedNodeId, multiSelectedIds, nodes, displaySettings } = get();
+    // 全局设置「允许垂直移动」关闭时，禁止键盘上下键改变角色块垂直位置（与拖拽行为一致）。
+    const effDy = displaySettings.allowVerticalMove ? dy : 0;
+    const ids = new Set<string>();
+    if (selectedNodeId) ids.add(selectedNodeId);
+    for (const id of multiSelectedIds) ids.add(id);
+    if (ids.size === 0) return;
     set({
-      nodes: get().nodes.map(n => ({ ...n, selected: idSet.has(n.id) })),
-      selectedNodeId: ids.length > 0 ? ids[ids.length - 1] : null,
-      selectedEdgeId: null,
-      edges: get().edges.map(e => ({ ...e, selected: false })),
+      nodes: nodes.map((n) =>
+        ids.has(n.id) && n.position
+          ? { ...n, position: { x: n.position.x + dx, y: n.position.y + effDy } }
+          : n
+      ),
     });
   },
 
@@ -1651,10 +1947,15 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     pushUndo('修改关系类型');
     const edges = get().edges.map((e) => {
       if (e.id !== edgeId) return e;
-      const newData: EdgeData = { ...(e.data as EdgeData), type: newType };
+      const baseData = e.data as EdgeData;
+      const newData: EdgeData = { ...baseData, type: newType };
       if (newType === 'custom') {
         newData.customLabel = customLabel || '自定义';
+      } else if (newType === 'superior-subordinate') {
+        // 上下级同样支持自定义称谓（如"导师""汇报对象"），保留原有或按传入更新
+        if (customLabel !== undefined) newData.customLabel = customLabel || undefined;
       } else {
+        // parent-child / spouse 不使用自定义标签
         delete newData.customLabel;
       }
       return { ...e, data: newData, type: newType };
@@ -1774,6 +2075,12 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       } else if (category === 'other') {
         // 其他：所有自定义关系
         matched = data.type === 'custom';
+      } else if (category === 'superiors') {
+        // 上级：superior-subordinate 边且该节点为 target（下级端）
+        matched = data.type === 'superior-subordinate' && e.target === nodeId;
+      } else if (category === 'subordinates') {
+        // 下级：superior-subordinate 边且该节点为 source（上级端）
+        matched = data.type === 'superior-subordinate' && e.source === nodeId;
       } else {
         // 子类别：customLabel 匹配
         matched = data.type === 'custom' && data.customLabel === category;
@@ -2009,27 +2316,6 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     const { nodes, edges } = get();
     if (nodes.length === 0) return;
 
-    const dagreGraph = new dagre.graphlib.Graph();
-    dagreGraph.setDefaultEdgeLabel(() => ({}));
-    dagreGraph.setGraph({ rankdir: 'TB', nodesep: 80, ranksep: 120 });
-
-    nodes.forEach((node) => {
-      dagreGraph.setNode(node.id, { width: 160, height: 120 });
-    });
-
-    edges.forEach((edge) => {
-      if (edge.data?.type === 'spouse') {
-        dagreGraph.setEdge(edge.source, edge.target, { minlen: 0, weight: 10 });
-      } else if (edge.data?.type === 'custom') {
-        // 自定义关系权重低，不影响血缘层级布局
-        dagreGraph.setEdge(edge.source, edge.target, { minlen: 1, weight: 0 });
-      } else {
-        dagreGraph.setEdge(edge.source, edge.target, { minlen: 1, weight: 1 });
-      }
-    });
-
-    dagre.layout(dagreGraph);
-
     // 整理布局时清除所有 yOverridden 标记，让 Y 重新按出生年月计算
     const clearedNodes = nodes.map((node) => {
       if (node.data.yOverridden) {
@@ -2039,18 +2325,8 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       return node;
     });
 
-    const newNodes = clearedNodes.map((node) => {
-      const nodeWithPosition = dagreGraph.node(node.id);
-      return {
-        ...node,
-        position: {
-          ...node.position,
-          x: nodeWithPosition.x - 80,
-        },
-      };
-    });
-
-    set({ nodes: applyRelativeYPositions(newNodes, get().displaySettings.verticalGapScale) });
+    // 复用与初始加载一致的结构化布局：X 按关系分层、Y 按出生年月
+    set({ nodes: applyRelativeYPositions(clearedNodes, get().displaySettings.verticalGapScale, edges) });
   },
 
   exportData: (format) => {
@@ -2153,7 +2429,7 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
     }
 
     // 根据模式决定关系类型
-    let edgeType: 'parent' | 'child' | 'spouse' | 'custom';
+    let edgeType: 'parent' | 'child' | 'spouse' | 'custom' | 'superior' | 'subordinate';
     let resultEdgeType = '';
     let reason = '';
 
@@ -2170,6 +2446,11 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       edgeType = 'custom';
       resultEdgeType = 'custom';
       reason = state.connectionCustomLabel || '自定义';
+    } else if (mode === 'superior-subordinate') {
+      // A 为上级，B 为下级（明确方向，不按年龄推断）
+      edgeType = 'superior'; // connectExisting(A, B, 'superior') => A 上级 B 下级
+      resultEdgeType = 'superior-subordinate';
+      reason = '上下级';
     } else {
       // auto：根据年龄差判断
       const ageA = calcAgeFromBirth(aNode.data.birthDate, aNode.data.deathDate);

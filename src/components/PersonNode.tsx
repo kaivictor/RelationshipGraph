@@ -131,17 +131,25 @@ const ICON_FIELDS = {
 
 // 用 memo 包裹：组件仅在 props（id/data/selected）或内部订阅的 store 切片变化时才重渲染，
 // 避免父级（画布）无关重渲染波及所有节点；配合 React Flow 内部的节点 memo 进一步减少重渲染。
-export const PersonNodeComponent = memo(function PersonNodeComponent({ id, data, selected }: { id: string; data: PersonData; selected: boolean }) {
+export const PersonNodeComponent = memo(function PersonNodeComponent({ id, data }: { id: string; data: PersonData }) {
   const isEn = useLang() === 'en';
   const displaySettings = useRelationshipStore((state) => state.displaySettings);
   const isGrayed = useRelationshipStore((state) => state.grayedNodeIds.has(id));
+  // 选中高亮完全由 store 控制，脱离 React Flow 受控的 selected：
+  // 8eaffb7 引入的 memo 化使 React Flow 传入的 selected prop 在受控模式下经常不更新，
+  // 因此高亮一律由 selectedNodeId（单选）与 multiSelectedIds（长按多选）驱动，memo 下仍可靠。
+  const selectedNodeId = useRelationshipStore((state) => state.selectedNodeId);
+  const multiSelectedIds = useRelationshipStore((state) => state.multiSelectedIds);
   // 订阅 edges 以正确计算关系统计；拖动节点时 edges 引用不变，因此不会触发重渲染，
   // 与原行为一致（仅真正的连线增删改才会重算 stats）。
   const edges = useRelationshipStore((state) => state.edges);
 
-  // 关系统计：父母 / 子女 / 爱人 / 其他
+  // 选中态：单选来自 selectedNodeId；多选来自 multiSelectedIds。
+  const isSelected = selectedNodeId === id || multiSelectedIds.has(id);
+
+  // 关系统计：根据徽章维度（family / hierarchy）分别计算
   const stats = (() => {
-    let parents = 0, children = 0, spouse = 0, others = 0;
+    let parents = 0, children = 0, spouse = 0, others = 0, superior = 0, subordinate = 0;
     for (const e of edges) {
       if (e.source !== id && e.target !== id) continue;
       const t = (e.data as { type?: string })?.type;
@@ -152,9 +160,18 @@ export const PersonNodeComponent = memo(function PersonNodeComponent({ id, data,
         spouse++;
       } else if (t === 'custom') {
         others++;
+      } else if (t === 'superior-subordinate') {
+        if (e.source === id) subordinate++; // 我方为上级 → 下级数
+        else if (e.target === id) superior++; // 我方为下级 → 上级数
       }
     }
-    return { parents, children, spouse, others };
+    const mode = displaySettings.statsBadgeMode;
+    if (mode === 'hierarchy') {
+      // 层级维度：上级 / 下级 / 其他（父母子女爱人归入其他）
+      return { parents: superior, children: subordinate, spouse: 0, others: parents + children + spouse + others };
+    }
+    // 家庭维度：父母 / 子女 / 爱人 / 其他（上下级归入其他）
+    return { parents, children, spouse, others: others + superior + subordinate };
   })();
   const formatCount = (n: number) => (n > 99 ? '*' : n > 9 ? '9+' : String(n));
 
@@ -257,7 +274,7 @@ export const PersonNodeComponent = memo(function PersonNodeComponent({ id, data,
           : isGrayed
             ? 'bg-gray-100 border-gray-300 grayscale'
             : 'bg-white',
-        selected ? 'border-blue-500 shadow-md' : (isGrayed ? '' : data.deceased ? 'border-gray-500 border-dashed' : 'border-gray-200'),
+        isSelected ? 'border-blue-500 shadow-md' : (isGrayed ? '' : data.deceased ? 'border-gray-500 border-dashed' : 'border-gray-200'),
         data.isSelf ? 'ring-2 ring-blue-300' : ''
       )}
     >
@@ -471,13 +488,25 @@ export const PersonNodeComponent = memo(function PersonNodeComponent({ id, data,
       {displaySettings.showStatsBadge && (
         <div className="mt-1.5 flex justify-center" aria-hidden="true">
           <div className="inline-flex items-center gap-px px-1 py-[1px] rounded-md bg-gray-100/80 border border-gray-200/70 text-[8px] leading-none text-gray-500 select-none">
-            <span>{t('statParents')}{formatCount(stats.parents)}</span>
-            <span className="text-gray-300 text-[6px]">·</span>
-            <span>{t('statChildren')}{formatCount(stats.children)}</span>
-            <span className="text-gray-300 text-[6px]">·</span>
-            <span>{t('statSpouse')}{formatCount(stats.spouse)}</span>
-            <span className="text-gray-300 text-[6px]">·</span>
-            <span>{t('statOthers')}{formatCount(stats.others)}</span>
+            {displaySettings.statsBadgeMode === 'hierarchy' ? (
+              <>
+                <span>{t('statSuperior')}{formatCount(stats.parents)}</span>
+                <span className="text-gray-300 text-[6px]">·</span>
+                <span>{t('statSubordinate')}{formatCount(stats.children)}</span>
+                <span className="text-gray-300 text-[6px]">·</span>
+                <span>{t('statOthers')}{formatCount(stats.others)}</span>
+              </>
+            ) : (
+              <>
+                <span>{t('statParents')}{formatCount(stats.parents)}</span>
+                <span className="text-gray-300 text-[6px]">·</span>
+                <span>{t('statChildren')}{formatCount(stats.children)}</span>
+                <span className="text-gray-300 text-[6px]">·</span>
+                <span>{t('statSpouse')}{formatCount(stats.spouse)}</span>
+                <span className="text-gray-300 text-[6px]">·</span>
+                <span>{t('statOthers')}{formatCount(stats.others)}</span>
+              </>
+            )}
           </div>
         </div>
       )}

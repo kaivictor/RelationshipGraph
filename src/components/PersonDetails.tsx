@@ -151,7 +151,7 @@ export function PersonDetails() {
 
   const [formData, setFormData] = useState<PersonData | null>(null);
   const [isAddingRelative, setIsAddingRelative] = useState(false);
-  const [relativeType, setRelativeType] = useState<'parent' | 'child' | 'spouse' | 'custom'>('child');
+  const [relativeType, setRelativeType] = useState<'parent' | 'child' | 'spouse' | 'custom' | 'superior' | 'subordinate'>('child');
   const [customRelLabel, setCustomRelLabel] = useState('');
   const [useExistingPerson, setUseExistingPerson] = useState(false);
   const [existingPersonId, setExistingPersonId] = useState('');
@@ -258,9 +258,9 @@ export function PersonDetails() {
   };
 
   const handleRelativeTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value as 'parent' | 'child' | 'spouse' | 'custom';
+    const val = e.target.value as 'parent' | 'child' | 'spouse' | 'custom' | 'superior' | 'subordinate';
     setRelativeType(val);
-    // 父母/儿女/爱人/自定义均不强制改性别，保留用户选择
+    // 父母/儿女/爱人/自定义/上下级均不强制改性别，保留用户选择
   };
 
   const handleAddRelative = () => {
@@ -746,12 +746,17 @@ export function PersonDetails() {
                   <option value="child">{tt('儿女')}</option>
                   <option value="spouse">{tt('爱人')}</option>
                   <option value="custom">{tt('自定义（同学、同事、朋友等）')}</option>
+                  <option value="superior">{tt('上下级 · 我方为上级')}</option>
+                  <option value="subordinate">{tt('上下级 · 我方为下级')}</option>
                 </select>
                 {relativeType === 'parent' && (
                   <p className="text-[10px] text-gray-400 mt-1">{tt('系统会根据性别推断父亲/母亲。')}</p>
                 )}
                 {relativeType === 'child' && (
                   <p className="text-[10px] text-gray-400 mt-1">{tt('系统会根据性别推断儿子/女儿。')}</p>
+                )}
+                {(relativeType === 'superior' || relativeType === 'subordinate') && (
+                  <p className="text-[10px] text-gray-400 mt-1">{tt('上下级为明确的有向关系，不按年龄推断；可在关系详情中反转方向。')}</p>
                 )}
               </div>
 
@@ -806,7 +811,7 @@ export function PersonDetails() {
                       ))}
                   </select>
                   <p className="text-[10px] text-gray-400 mt-1">
-                    将选中的人物作为当前人物的{relativeType === 'parent' ? '父母' : relativeType === 'child' ? '子女' : relativeType === 'spouse' ? '爱人' : '自定义关系'}。已存在的关系不会重复创建。
+                    将选中的人物作为当前人物的{relativeType === 'parent' ? '父母' : relativeType === 'child' ? '子女' : relativeType === 'spouse' ? '爱人' : relativeType === 'superior' ? '上级' : relativeType === 'subordinate' ? '下级' : '自定义关系'}。已存在的关系不会重复创建。
                   </p>
                 </div>
               ) : (
@@ -951,6 +956,16 @@ export function PersonDetails() {
           const childrenState = computeFoldState((e) => (e.data as { type?: string })?.type === 'parent-child' && e.source === nodeId);
           const spouseState = computeFoldState((e) => (e.data as { type?: string })?.type === 'spouse');
           const otherState = computeFoldState((e) => (e.data as { type?: string })?.type === 'custom');
+          const superiorsState = computeFoldState((e) => (e.data as { type?: string })?.type === 'superior-subordinate' && e.target === nodeId);
+          const subordinatesState = computeFoldState((e) => (e.data as { type?: string })?.type === 'superior-subordinate' && e.source === nodeId);
+
+          // 该人物是否实际拥有各类关系：没有则不显示对应隐藏行
+          const hasParents = edges.some((e) => e.target === nodeId && (e.data as { type?: string })?.type === 'parent-child');
+          const hasChildren = edges.some((e) => e.source === nodeId && (e.data as { type?: string })?.type === 'parent-child');
+          const hasSpouse = edges.some((e) => (e.data as { type?: string })?.type === 'spouse' && (e.source === nodeId || e.target === nodeId));
+          const hasSuperiors = edges.some((e) => e.target === nodeId && (e.data as { type?: string })?.type === 'superior-subordinate');
+          const hasSubordinates = edges.some((e) => e.source === nodeId && (e.data as { type?: string })?.type === 'superior-subordinate');
+          const hasOther = edges.some((e) => (e.data as { type?: string })?.type === 'custom' && (e.source === nodeId || e.target === nodeId));
 
           // 收集"其他"下的自定义关系标签
           const customLabels = Array.from(new Set(
@@ -1054,37 +1069,63 @@ export function PersonDetails() {
               <p className="text-[10px] text-gray-400 mb-2">
                 {tt('隐藏 = 概念上断开这些关系，断开后与"自己"不连通的角色全部隐藏。取消请选"无"。若第一次点击「全部」被拦截（橙色高亮），再次点击可强制隐藏该类别（含"自己"），但仍不会隐藏当前选中的角色。')}
               </p>
-              <FoldRow
-                label={tt('隐藏父母')}
-                state={parentsState}
-                intercepted={interceptedCategories.has('parents')}
-                onAll={() => handleAllClick('parents')}
-                onNone={() => { allClickCountRef.current['parents'] = 0; clearIntercepted('parents'); doFold('parents', 'none'); }}
-              />
-              <FoldRow
-                label={tt('隐藏子女')}
-                state={childrenState}
-                intercepted={interceptedCategories.has('children')}
-                onAll={() => handleAllClick('children')}
-                onNone={() => { allClickCountRef.current['children'] = 0; clearIntercepted('children'); doFold('children', 'none'); }}
-              />
-              <FoldRow
-                label={tt('隐藏爱人')}
-                state={spouseState}
-                intercepted={interceptedCategories.has('spouse')}
-                onAll={() => handleAllClick('spouse')}
-                onNone={() => { allClickCountRef.current['spouse'] = 0; clearIntercepted('spouse'); doFold('spouse', 'none'); }}
-              />
-              <FoldRow
-                label={tt('隐藏其他')}
-                state={otherState}
-                intercepted={interceptedCategories.has('other')}
-                onAll={() => handleAllClick('other')}
-                onNone={() => { allClickCountRef.current['other'] = 0; clearIntercepted('other'); doFold('other', 'none'); }}
-                expandable={customLabels.length > 0}
-                expanded={expandOtherFold}
-                onToggleExpand={() => setExpandOtherFold((v) => !v)}
-              />
+              {hasParents && (
+                <FoldRow
+                  label={tt('隐藏父母')}
+                  state={parentsState}
+                  intercepted={interceptedCategories.has('parents')}
+                  onAll={() => handleAllClick('parents')}
+                  onNone={() => { allClickCountRef.current['parents'] = 0; clearIntercepted('parents'); doFold('parents', 'none'); }}
+                />
+              )}
+              {hasChildren && (
+                <FoldRow
+                  label={tt('隐藏子女')}
+                  state={childrenState}
+                  intercepted={interceptedCategories.has('children')}
+                  onAll={() => handleAllClick('children')}
+                  onNone={() => { allClickCountRef.current['children'] = 0; clearIntercepted('children'); doFold('children', 'none'); }}
+                />
+              )}
+              {hasSpouse && (
+                <FoldRow
+                  label={tt('隐藏爱人')}
+                  state={spouseState}
+                  intercepted={interceptedCategories.has('spouse')}
+                  onAll={() => handleAllClick('spouse')}
+                  onNone={() => { allClickCountRef.current['spouse'] = 0; clearIntercepted('spouse'); doFold('spouse', 'none'); }}
+                />
+              )}
+              {hasSuperiors && (
+                <FoldRow
+                  label={tt('隐藏上级')}
+                  state={superiorsState}
+                  intercepted={interceptedCategories.has('superiors')}
+                  onAll={() => handleAllClick('superiors')}
+                  onNone={() => { allClickCountRef.current['superiors'] = 0; clearIntercepted('superiors'); doFold('superiors', 'none'); }}
+                />
+              )}
+              {hasSubordinates && (
+                <FoldRow
+                  label={tt('隐藏下级')}
+                  state={subordinatesState}
+                  intercepted={interceptedCategories.has('subordinates')}
+                  onAll={() => handleAllClick('subordinates')}
+                  onNone={() => { allClickCountRef.current['subordinates'] = 0; clearIntercepted('subordinates'); doFold('subordinates', 'none'); }}
+                />
+              )}
+              {hasOther && (
+                <FoldRow
+                  label={tt('隐藏其他')}
+                  state={otherState}
+                  intercepted={interceptedCategories.has('other')}
+                  onAll={() => handleAllClick('other')}
+                  onNone={() => { allClickCountRef.current['other'] = 0; clearIntercepted('other'); doFold('other', 'none'); }}
+                  expandable={customLabels.length > 0}
+                  expanded={expandOtherFold}
+                  onToggleExpand={() => setExpandOtherFold((v) => !v)}
+                />
+              )}
               {expandOtherFold && customLabels.length > 0 && (
                 <div className="ml-4 pl-2 border-l border-gray-200 mt-1 space-y-0.5">
                   {customLabels.map((label) => {
