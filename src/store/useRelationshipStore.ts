@@ -21,6 +21,9 @@ import {
   type ExportData,
 } from '../utils/dataSerializer';
 import { type Language } from '../i18n';
+// 家族关系分组 + X 布局（X 严格移植自 Layout/test_10_GLM_3.py，Y 沿用本项目算法）
+import { layoutFamily, UNIT_X } from '../utils/relationLayout';
+import { computeGroups } from '../utils/grouping';
 
 // ===== 聚类式分区（仅决定每个节点落在哪一"列/区块"，Y 轴仍由出生年月决定）=====
 type ClusterKind = 'relative' | 'superior' | 'custom' | 'none';
@@ -363,6 +366,10 @@ export type PersonData = {
   relationshipOverridden?: boolean;
   // 用户是否手动垂直拖动过该节点：true 时布局重算会保留其 Y
   yOverridden?: boolean;
+  // py 代序 Y（与 Layout/example_repaire.md / test2.py 的整数 Y 体系一致）。
+  // 布局算法（relationLayout）优先使用此值作为整数 Y，以保证与 py 用例完全一致；
+  // 旧数据/导入数据缺此字段时，回退为按出生年月量化得到的整数 Y。
+  genY?: number;
 };
 
 // 多值字段名集合
@@ -920,7 +927,16 @@ interface RelationshipState {
   language: Language;
   setLanguage: (lang: Language) => void;
   clearBrowserData: () => void;
+  /** 整理布局：自动排布节点。返回是否成功（false 表示因超限/超时取消并恢复原样） */
   layoutGraph: () => void;
+  /** 简单布局：使用旧的聚类分区算法（applyRelativeYPositions）排布节点，不受规模限制。当新算法超限弹「数量太多」时供用户选择。 */
+  simpleLayout: () => void;
+  /** 整理布局遮罩状态：'idle' 无遮罩 | 'processing' 正在整理中 | 'too-many' 数量太多（2 秒后自动关闭） */
+  layoutProcessing: 'idle' | 'saving' | 'processing' | 'too-many';
+  setLayoutProcessing: (v: 'idle' | 'saving' | 'processing' | 'too-many') => void;
+  /** 简单布局按钮是否可见：新算法因规模超限弹「数量太多」后置 true，点击简单布局或重新整理成功后置 false */
+  simpleLayoutAvailable: boolean;
+  setSimpleLayoutAvailable: (v: boolean) => void;
   recalculateRelationships: () => void;
   exportData: (format?: 'json' | 'xml' | 'csv') => string;
   importData: (text: string, format?: 'json' | 'xml') => void;
@@ -944,26 +960,26 @@ interface RelationshipState {
 }
 
 const initialNodes: PersonNode[] = [
-  { id: 'n1', type: 'person', position: { x: 0, y: 0 }, data: { name: '曾祖父', avatar: '', relationship: '曾祖父', birthDate: '1930-01', gender: 'male' } },
-  { id: 'n2', type: 'person', position: { x: 0, y: 0 }, data: { name: '曾祖母', avatar: '', relationship: '曾祖母', birthDate: '1932-05', gender: 'female' } },
-  { id: 'n3', type: 'person', position: { x: 0, y: 0 }, data: { name: '爷爷', avatar: '', relationship: '爷爷', birthDate: '1955-03', gender: 'male' } },
-  { id: 'n4', type: 'person', position: { x: 0, y: 0 }, data: { name: '奶奶', avatar: '', relationship: '奶奶', birthDate: '1958-07', gender: 'female' } },
-  { id: 'n5', type: 'person', position: { x: 0, y: 0 }, data: { name: '爸爸', namePinyin: 'Zhang Wei', avatar: '', relationship: '爸爸', birthDate: '1980-02', gender: 'male', education: '硕士', phone: ['13900139000'], qq: ['12345678'] } },
-  { id: 'n6', type: 'person', position: { x: 0, y: 0 }, data: { name: '妈妈', avatar: '', relationship: '妈妈', birthDate: '1982-09', gender: 'female' } },
-  { id: 'n7', type: 'person', position: { x: 0, y: 0 }, data: { name: '叔叔', avatar: '', relationship: '叔叔', birthDate: '1985-11', gender: 'male' } },
-  { id: 'self', type: 'person', position: { x: 0, y: 0 }, data: { name: '自己', namePinyin: 'Zhang San', formerName: ['张小三'], avatar: '', relationship: '自己', popularName: ['小三'], birthDate: '2005-06', gender: 'male', education: '本科', phone: ['13800138000'], wechat: ['zhangsan_wx'], email: ['zhangsan@example.com'], address: ['北京市朝阳区'], licensePlate: ['京A88888'], isSelf: true } },
-  { id: 'n9', type: 'person', position: { x: 0, y: 0 }, data: { name: '妹妹', avatar: '', relationship: '妹妹', birthDate: '2008-08', gender: 'female' } },
-  { id: 'n10', type: 'person', position: { x: 0, y: 0 }, data: { name: '爱人', avatar: '', relationship: '爱人', birthDate: '2006-04', gender: 'female' } },
-  { id: 'n11', type: 'person', position: { x: 0, y: 0 }, data: { name: '儿子', avatar: '', relationship: '儿子', birthDate: '2030-01', gender: 'male' } },
-  { id: 'n12', type: 'person', position: { x: 0, y: 0 }, data: { name: '女儿', avatar: '', relationship: '女儿', birthDate: '2032-03', gender: 'female' } },
+  { id: 'n1', type: 'person', position: { x: 0, y: 0 }, data: { name: '曾祖父', avatar: '', relationship: '曾祖父', birthDate: '1930-01', gender: 'male', genY: 0 } },
+  { id: 'n2', type: 'person', position: { x: 0, y: 0 }, data: { name: '曾祖母', avatar: '', relationship: '曾祖母', birthDate: '1932-05', gender: 'female', genY: 1 } },
+  { id: 'n3', type: 'person', position: { x: 0, y: 0 }, data: { name: '爷爷', avatar: '', relationship: '爷爷', birthDate: '1955-03', gender: 'male', genY: 6 } },
+  { id: 'n4', type: 'person', position: { x: 0, y: 0 }, data: { name: '奶奶', avatar: '', relationship: '奶奶', birthDate: '1958-07', gender: 'female', genY: 6 } },
+  { id: 'n5', type: 'person', position: { x: 0, y: 0 }, data: { name: '爸爸', namePinyin: 'Zhang Wei', avatar: '', relationship: '爸爸', birthDate: '1980-02', gender: 'male', education: '硕士', phone: ['13900139000'], qq: ['12345678'], genY: 11 } },
+  { id: 'n6', type: 'person', position: { x: 0, y: 0 }, data: { name: '妈妈', avatar: '', relationship: '妈妈', birthDate: '1982-09', gender: 'female', genY: 11 } },
+  { id: 'n7', type: 'person', position: { x: 0, y: 0 }, data: { name: '叔叔', avatar: '', relationship: '叔叔', birthDate: '1985-11', gender: 'male', genY: 12 } },
+  { id: 'self', type: 'person', position: { x: 0, y: 0 }, data: { name: '自己', namePinyin: 'Zhang San', formerName: ['张小三'], avatar: '', relationship: '自己', popularName: ['小三'], birthDate: '2005-06', gender: 'male', education: '本科', phone: ['13800138000'], wechat: ['zhangsan_wx'], email: ['zhangsan@example.com'], address: ['北京市朝阳区'], licensePlate: ['京A88888'], isSelf: true, genY: 17 } },
+  { id: 'n9', type: 'person', position: { x: 0, y: 0 }, data: { name: '妹妹', avatar: '', relationship: '妹妹', birthDate: '2008-08', gender: 'female', genY: 17 } },
+  { id: 'n10', type: 'person', position: { x: 0, y: 0 }, data: { name: '爱人', avatar: '', relationship: '爱人', birthDate: '2006-04', gender: 'female', genY: 17 } },
+  { id: 'n11', type: 'person', position: { x: 0, y: 0 }, data: { name: '儿子', avatar: '', relationship: '儿子', birthDate: '2030-01', gender: 'male', genY: 22 } },
+  { id: 'n12', type: 'person', position: { x: 0, y: 0 }, data: { name: '女儿', avatar: '', relationship: '女儿', birthDate: '2032-03', gender: 'female', genY: 23 } },
   // 公司关系示例（上下级联系，有向，不按年龄推断）
-  { id: 'c1', type: 'person', position: { x: 0, y: 0 }, data: { name: '王总', namePinyin: 'Wang Zong', avatar: '', relationship: '总经理', birthDate: '1968-01', gender: 'male' } },
-  { id: 'c2', type: 'person', position: { x: 0, y: 0 }, data: { name: '李经理', namePinyin: 'Li Jingli', avatar: '', relationship: '技术部经理', birthDate: '1978-03', gender: 'male' } },
-  { id: 'c3', type: 'person', position: { x: 0, y: 0 }, data: { name: '赵经理', namePinyin: 'Zhao Jingli', avatar: '', relationship: '市场部经理', birthDate: '1979-05', gender: 'female' } },
-  { id: 'c4', type: 'person', position: { x: 0, y: 0 }, data: { name: '孙经理', namePinyin: 'Sun Jingli', avatar: '', relationship: '人事部经理', birthDate: '1977-07', gender: 'female' } },
-  { id: 'c5', type: 'person', position: { x: 0, y: 0 }, data: { name: '周工', namePinyin: 'Zhou Gong', avatar: '', relationship: '工程师', birthDate: '1992-02', gender: 'male' } },
-  { id: 'c6', type: 'person', position: { x: 0, y: 0 }, data: { name: '吴工', namePinyin: 'Wu Gong', avatar: '', relationship: '工程师', birthDate: '1993-08', gender: 'male' } },
-  { id: 'c7', type: 'person', position: { x: 0, y: 0 }, data: { name: '郑专员', namePinyin: 'Zheng ZhuanYuan', avatar: '', relationship: '市场专员', birthDate: '1994-04', gender: 'female' } },
+  { id: 'c1', type: 'person', position: { x: 0, y: 0 }, data: { name: '王总', namePinyin: 'Wang Zong', avatar: '', relationship: '总经理', birthDate: '1968-01', gender: 'male', genY: 8 } },
+  { id: 'c2', type: 'person', position: { x: 0, y: 0 }, data: { name: '李经理', namePinyin: 'Li Jingli', avatar: '', relationship: '技术部经理', birthDate: '1978-03', gender: 'male', genY: 10 } },
+  { id: 'c3', type: 'person', position: { x: 0, y: 0 }, data: { name: '赵经理', namePinyin: 'Zhao Jingli', avatar: '', relationship: '市场部经理', birthDate: '1979-05', gender: 'female', genY: 11 } },
+  { id: 'c4', type: 'person', position: { x: 0, y: 0 }, data: { name: '孙经理', namePinyin: 'Sun Jingli', avatar: '', relationship: '人事部经理', birthDate: '1977-07', gender: 'female', genY: 10 } },
+  { id: 'c5', type: 'person', position: { x: 0, y: 0 }, data: { name: '周工', namePinyin: 'Zhou Gong', avatar: '', relationship: '工程师', birthDate: '1992-02', gender: 'male', genY: 14 } },
+  { id: 'c6', type: 'person', position: { x: 0, y: 0 }, data: { name: '吴工', namePinyin: 'Wu Gong', avatar: '', relationship: '工程师', birthDate: '1993-08', gender: 'male', genY: 14 } },
+  { id: 'c7', type: 'person', position: { x: 0, y: 0 }, data: { name: '郑专员', namePinyin: 'Zheng ZhuanYuan', avatar: '', relationship: '市场专员', birthDate: '1994-04', gender: 'female', genY: 14 } },
 ];
 
 const initialEdges: Edge[] = [
@@ -1096,6 +1112,18 @@ function normalizeNodes(nodes: PersonNode[]): PersonNode[] {
   return nodes.map(normalizeNodeData);
 }
 
+// 归一化边：确保 data.type 存在（兼容旧 persisted 数据仅有顶层 type 的情况），
+// 否则分组/布局算法无法识别关系类型。
+function normalizeEdges(edges: Edge[]): Edge[] {
+  return edges.map((e) => {
+    const t = (e.data?.type as string | undefined) ?? (e.type as string | undefined);
+    if (t && !e.data?.type) {
+      return { ...e, data: { ...(e.data ?? {}), type: t } };
+    }
+    return e;
+  });
+}
+
 // 根据出生年月计算年龄（用于连线模式自动判断）
 // birthDate 格式：YYYY-MM 或 YYYY-MM-DD；deathDate 同上（若有则截止到离世时）
 function calcAgeFromBirth(birthDate: string, deathDate?: string): number | null {
@@ -1117,7 +1145,7 @@ function calcAgeFromBirth(birthDate: string, deathDate?: string): number | null 
 // 初始：尝试从浏览器加载，否则用默认数据
 const persisted = loadPersistedState();
 const initialNodesResolved = persisted ? normalizeNodes(persisted.nodes) : applyRelativeYPositions(normalizeNodes(initialNodes), DEFAULT_DISPLAY_SETTINGS.verticalGapScale, initialEdges);
-const initialEdgesResolved = persisted ? persisted.edges : initialEdges;
+const initialEdgesResolved = normalizeEdges(persisted ? persisted.edges : initialEdges);
 const initialDisplaySettings = persisted ? persisted.displaySettings : DEFAULT_DISPLAY_SETTINGS;
 const initialViewport = persisted ? persisted.viewport : { x: 0, y: 0, zoom: 1 };
 // 手动隐藏节点：过滤掉已不存在的 id
@@ -1407,6 +1435,10 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   settingsPanelCollapsed: false,
   edgeMenu: null,
   language: getInitialLanguage(),
+  layoutProcessing: 'idle',
+  setLayoutProcessing: (v) => set({ layoutProcessing: v }),
+  simpleLayoutAvailable: false,
+  setSimpleLayoutAvailable: (v) => set({ simpleLayoutAvailable: v }),
 
   onNodesChange: (changes) => {
     const currentNodes = get().nodes;
@@ -2313,8 +2345,38 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
   },
 
   layoutGraph: () => {
-    const { nodes, edges } = get();
+    const state = get();
+    if (state.layoutProcessing === 'processing') return; // 防重入
+    const { nodes, edges } = state;
     if (nodes.length === 0) return;
+
+    // 阈值（超限/超时则取消布局并恢复原样，遮罩提示「数量太多」）
+    const MAX_GROUPS = 20;
+    const MAX_POINTS = 50;
+    const MAX_COMPUTE_MS = 10000;
+
+    // 轻量预检：点数量（所有人物节点）
+    const pointCount = nodes.length;
+    // 轻量预检：分组数量（仅分组步骤，开销小）
+    const normalizedEdgesPre = normalizeEdges(edges);
+    let groupCount = 0;
+    try {
+      groupCount = computeGroups(nodes.map((n) => n.id), normalizedEdgesPre).length;
+    } catch {
+      groupCount = 0;
+    }
+    if (pointCount > MAX_POINTS || groupCount > MAX_GROUPS) {
+      get().setLayoutProcessing('too-many');
+      get().setSimpleLayoutAvailable(true);
+      setTimeout(() => {
+        // 仅当仍处于 too-many（未被其他流程改变）时才关闭遮罩
+        if (get().layoutProcessing === 'too-many') get().setLayoutProcessing('idle');
+      }, 2000);
+      return;
+    }
+
+    // 压入撤销快照：仅当真正进入布局流程（预检通过）时才记录，超限/超时分支已提前 return 不记录
+    pushUndo('整理布局');
 
     // 整理布局时清除所有 yOverridden 标记，让 Y 重新按出生年月计算
     const clearedNodes = nodes.map((node) => {
@@ -2325,8 +2387,152 @@ export const useRelationshipStore = create<RelationshipState>((set, get) => {
       return node;
     });
 
+    // 归一化边：确保每条边的 data.type 存在（兼容 persisted 旧数据中仅有顶层 type 的情况），
+    // 否则分组算法无法识别关系类型，会导致布局整体错位。
+    const normalizedEdges = normalizeEdges(edges);
+
     // 复用与初始加载一致的结构化布局：X 按关系分层、Y 按出生年月
-    set({ nodes: applyRelativeYPositions(clearedNodes, get().displaySettings.verticalGapScale, edges) });
+    const yPositioned = applyRelativeYPositions(clearedNodes, get().displaySettings.verticalGapScale, normalizedEdges);
+
+    const nodeIds = yPositioned.map((n) => n.id);
+    const applyLaidOut = (positions: Map<string, number>) => {
+      // 图上渲染用坐标系映射：原始整数 X × UNIT_X → 像素；Y 保持出生年月像素值不变。
+      const laidOut = yPositioned.map((n) => ({
+        ...n,
+        position: { x: (positions.get(n.id) ?? 0) * UNIT_X, y: n.position.y },
+      }));
+      // 调试：输出「调整布局」后各人物块的【原始算法坐标】（未经任何缩放的整数坐标系）
+      console.log('[调整布局] 各人物块原始坐标（py 整数坐标系，未做像素映射）：');
+      for (const n of yPositioned) {
+        const rawX = positions.get(n.id) ?? 0;
+        const rawY = typeof (n.data as any)?.genY === 'number' ? (n.data as any).genY : Math.round(n.position.y / 44);
+        console.log(`  ${n.data.name ?? n.id}  ->  x=${rawX}, y=${rawY}`);
+      }
+      set({ nodes: laidOut, layoutProcessing: 'idle', simpleLayoutAvailable: false });
+    };
+
+    // 恢复原样（取消布局时调用）：基于进入布局前的快照
+    const restoreSnapshot = () => {
+      set({ nodes: snapshot.nodes, edges: snapshot.edges, layoutProcessing: 'too-many', simpleLayoutAvailable: true });
+      setTimeout(() => {
+        if (get().layoutProcessing === 'too-many') get().setLayoutProcessing('idle');
+      }, 2000);
+    };
+
+    // 进入布局前保存快照，用于超时/超阈值时恢复原样
+    const cloneNode = (n: PersonNode): PersonNode => ({ ...n, position: { ...n.position }, data: { ...n.data } });
+    const snapshot = {
+      nodes: nodes.map(cloneNode),
+      edges: edges.map((e) => ({ ...e, data: e.data ? { ...e.data } : e.data })),
+    };
+
+    // 把开销大的分组 + 枚举/DFS 求解放到 Web Worker，避免大图谱下主线程冻结（浏览器"卡死"）。
+    // 不支持 Worker 的环境（SSR / 测试）回退为同步计算（受 10s 看门狗保护）。
+    if (typeof Worker !== 'undefined') {
+      set({ layoutProcessing: 'processing' });
+      const worker = new Worker(new URL('../utils/layoutWorker.ts', import.meta.url), { type: 'module' });
+      let settled = false; // 已成功/已取消标记，避免看门狗与结果回调重复处理
+      const watchdog = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        // 计算时间超过 10 秒：终止 Worker，恢复原样
+        worker.terminate();
+        restoreSnapshot();
+      }, MAX_COMPUTE_MS);
+      worker.onmessage = (ev: MessageEvent<{ positions: [string, number][] }>) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        worker.terminate();
+        try {
+          const map = new Map<string, number>(ev.data.positions);
+          applyLaidOut(map);
+        } catch (e) {
+          console.error('[layoutGraph] 应用布局结果失败，保留原布局', e);
+          // 应用异常不是「超限/超时」，不显示「数量太多」，保留原样
+          set({ layoutProcessing: 'idle' });
+        }
+      };
+      worker.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        worker.terminate();
+        // Worker 加载/运行失败：回退同步计算。注意：失败不应误判为「数量太多」，
+        // 只有真正的「超限/超时」才提示 too-many；Worker 异常时正常布局即可。
+        console.warn('[layoutGraph] Worker 出错，回退同步计算');
+        try {
+          applyLaidOut(layoutFamily(nodeIds, yPositioned, normalizedEdges).positions);
+        } catch (e) {
+          console.error('[layoutGraph] 回退同步计算失败，保留原布局', e);
+          // 仅保留原样，不显示「数量太多」（这并非超限/超时）
+          set({ layoutProcessing: 'idle' });
+        }
+      };
+      worker.postMessage({ nodeIds, nodes: yPositioned, edges: normalizedEdges });
+    } else {
+      // 同步回退：用 watchdog 包裹，超过 10s 则恢复原样（同步阻塞期间计时器无法触发，
+      // 但计算结束时会检测到 settled 状态并丢弃结果）
+      set({ layoutProcessing: 'processing' });
+      let settled = false;
+      let result: Map<string, number> | null = null;
+      const watchdog = setTimeout(() => { settled = true; }, MAX_COMPUTE_MS);
+      try {
+        result = layoutFamily(nodeIds, yPositioned, normalizedEdges).positions;
+      } catch {
+        result = null;
+      }
+      clearTimeout(watchdog);
+      if (settled || !result) {
+        restoreSnapshot();
+      } else {
+        applyLaidOut(result);
+      }
+    }
+  },
+
+  // 简单布局：使用旧的「聚类分区」算法（applyRelativeYPositions）排布节点。
+  // 与新算法不同，它不受分组/点数上限约束，规模很大时也能跑（仅可能较慢/不紧凑）。
+  // 典型用途：新算法因规模超限弹「数量太多」后，用户可点它改用旧算法布局。
+  simpleLayout: () => {
+    const state = get();
+    if (state.layoutProcessing === 'processing') return; // 防重入
+    const { nodes, edges } = state;
+    if (nodes.length === 0) return;
+
+    // 进入布局前保存快照，用于异常时恢复原样（simpleLayout 不做规模预检，但仍保护异常）
+    const cloneNode = (n: PersonNode): PersonNode => ({ ...n, position: { ...n.position }, data: { ...n.data } });
+    const snapshot = {
+      nodes: nodes.map(cloneNode),
+      edges: edges.map((e) => ({ ...e, data: e.data ? { ...e.data } : e.data })),
+    };
+    const restoreSnapshot = () => {
+      set({ nodes: snapshot.nodes, edges: snapshot.edges, layoutProcessing: 'idle' });
+    };
+
+    // 压入撤销快照：记录布局前状态，便于撤销回到简单布局之前
+    pushUndo('简单布局');
+
+    set({ layoutProcessing: 'processing', simpleLayoutAvailable: false });
+    // 给一帧让遮罩渲染
+    requestAnimationFrame(() => {
+      try {
+        // 整理布局时清除所有 yOverridden 标记，让 Y 重新按出生年月计算
+        const clearedNodes = nodes.map((node) => {
+          if (node.data.yOverridden) {
+            const { yOverridden, ...rest } = node.data;
+            return { ...node, data: rest };
+          }
+          return node;
+        });
+        const normalizedEdges = normalizeEdges(edges);
+        const laidOut = applyRelativeYPositions(clearedNodes, get().displaySettings.verticalGapScale, normalizedEdges);
+        set({ nodes: laidOut, layoutProcessing: 'idle' });
+      } catch (e) {
+        console.error('[simpleLayout] 旧算法布局失败，恢复原样', e);
+        restoreSnapshot();
+      }
+    });
   },
 
   exportData: (format) => {

@@ -12,4 +12,5 @@ temp/
 .gitee/
 devdoc/
 *.lnk
-__pycache__/
+__pycache__/\
+Layout/

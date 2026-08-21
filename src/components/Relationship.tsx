@@ -73,6 +73,10 @@ export default function Relationship() {
     resetConnectSelection,
     setShowHelpPage,
     setEdgeMenu,
+    layoutProcessing,
+    setLayoutProcessing,
+    simpleLayoutAvailable,
+    simpleLayout,
   } = useRelationshipStore(
     useShallow((s) => ({
       nodes: s.nodes,
@@ -95,6 +99,10 @@ export default function Relationship() {
       resetConnectSelection: s.resetConnectSelection,
       setShowHelpPage: s.setShowHelpPage,
       setEdgeMenu: s.setEdgeMenu,
+      layoutProcessing: s.layoutProcessing,
+      setLayoutProcessing: s.setLayoutProcessing,
+      simpleLayoutAvailable: s.simpleLayoutAvailable,
+      simpleLayout: s.simpleLayout,
     }))
   );
 
@@ -242,22 +250,26 @@ export default function Relationship() {
   const undoStack = useRelationshipStore((s) => s.undoStack);
   const lastUndoLabel = undoStack.length > 0 ? undoStack[undoStack.length - 1].label : '';
 
-  // Initial: 若有持久化的 viewport 则恢复，否则 fitView
+  // Initial: 若有持久化的 viewport 则恢复，否则 fitView。
+  // 注意：任何情况下都不自动执行「整理布局」（包括示例图谱），仅恢复视口。
   useEffect(() => {
-    // 仅在没有持久化 viewport（初始默认 0,0,1）时重新布局
-    const hasSavedViewport = savedViewport.x !== 0 || savedViewport.y !== 0 || savedViewport.zoom !== 1;
-    if (!hasSavedViewport) {
-      layoutGraph();
-      setTimeout(() => {
-        fitView({ padding: 0.2 });
-      }, 100);
-    } else {
+    if (savedViewport.x !== 0 || savedViewport.y !== 0 || savedViewport.zoom !== 1) {
       setTimeout(() => {
         setRFViewport(savedViewport);
       }, 100);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 整理布局成功后（processing → idle）自动适配视图；取消/超限（too-many）不 fitView
+  const prevLayoutProcessingRef = useRef<'idle' | 'processing' | 'too-many'>('idle');
+  useEffect(() => {
+    const prev = prevLayoutProcessingRef.current;
+    prevLayoutProcessingRef.current = layoutProcessing;
+    if (prev === 'processing' && layoutProcessing === 'idle') {
+      setTimeout(() => fitView({ padding: 0.2 }), 100);
+    }
+  }, [layoutProcessing, fitView]);
 
   // 监听 viewport 变化（缩放/平移），保存到 store
   const onMoveEnd = useCallback((evt: unknown, vp: { x: number; y: number; zoom: number }) => {
@@ -485,6 +497,24 @@ export default function Relationship() {
     const fine = pad(d.getMilliseconds(), 3) + '0';
     return `${base}${fine}`;
   }, []);
+
+  // 整理布局的统一入口：先本地保存（下载 XML 备份），再计算数量并整理。
+  // - kind='full'：使用新算法（layoutGraph），规模超限会弹「数量太多」+「简单布局」按钮
+  // - kind='simple'：使用旧算法（simpleLayout），不受规模限制
+  const runLayoutWithBackup = useCallback(async (kind: 'full' | 'simple') => {
+    // 1) 显示「正在本地保存数据」
+    setLayoutProcessing('saving');
+    // 2) 下载当前图谱数据为 XML（整理前备份，防止卡顿/异常导致数据丢失）
+    try {
+      const data = exportData('xml');
+      await exportFile(`relationship-backup-${timestampSuffix()}.xml`, data, 'application/xml');
+    } catch (err) {
+      console.error('备份下载失败', err);
+    }
+    // 3) 计算数量并整理（内部会切换到 processing / too-many 遮罩）
+    if (kind === 'full') layoutGraph();
+    else simpleLayout();
+  }, [exportData, exportFile, timestampSuffix, setLayoutProcessing, layoutGraph, simpleLayout]);
 
   const handleExportImage = useCallback(async (format: 'png' | 'svg', quality?: number) => {
     setShowExportMenu(false);
@@ -785,12 +815,24 @@ export default function Relationship() {
           </button>
           <button
             onClick={() => {
-              layoutGraph();
-              setTimeout(() => fitView({ padding: 0.2 }), 100);
+              runLayoutWithBackup('full');
             }}
-            aria-label={tt('整理布局：自动排布所有人物节点')}
-            className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700"
+            disabled={layoutProcessing === 'processing' || layoutProcessing === 'saving'}
+            title={tt('整理布局：自动排布所有人物节点（布局整理不一定给出合适的结果，同时可能导致浏览器卡顿，在整理前会下载当前图谱数据）')}
+            aria-label={tt('整理布局：自动排布所有人物节点（布局整理不一定给出合适的结果，同时可能导致浏览器卡顿，在整理前会下载当前图谱数据）')}
+            className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 text-sm font-medium text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
           >{tt('整理布局')}</button>
+          {simpleLayoutAvailable && (
+            <button
+              onClick={() => {
+                runLayoutWithBackup('simple');
+              }}
+              title={tt('简单布局：使用旧算法排布所有人物节点（布局整理不一定给出合适的结果，同时可能导致浏览器卡顿，在整理前会下载当前图谱数据）')}
+              aria-label={tt('简单布局：使用旧算法排布所有人物节点（布局整理不一定给出合适的结果，同时可能导致浏览器卡顿，在整理前会下载当前图谱数据）')}
+              className="flex items-center gap-2 px-3 py-2 bg-pink-100 border border-gray-200 rounded-md shadow-sm hover:bg-pink-50 text-sm font-medium text-gray-700"
+            >{tt('简单布局')}</button>
+          )}
+          
           {/* 连线模式 */}
           <div className="relative">
             <button
@@ -1055,6 +1097,38 @@ export default function Relationship() {
           <div className="flex flex-col items-center gap-3">
             <div className="w-10 h-10 border-3 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
             <div className="text-sm text-gray-600">{tt('正在生成图片，请稍候...')}</div>
+          </div>
+        </div>
+      )}
+
+      {/* 整理布局全局遮罩：保存中显示「正在本地保存数据」；处理中显示「正在整理布局中」；
+          超限/超时显示「数量太多」2 秒后自动关闭。所有状态下方均附卡顿提示小字。 */}
+      {layoutProcessing !== 'idle' && (
+        <div
+          className="export-hide fixed inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center z-[9999]"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex flex-col items-center gap-3">
+            {layoutProcessing === 'saving' ? (
+              <>
+                <div className="w-10 h-10 border-3 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+                <div className="text-sm text-gray-600">{tt('正在本地保存数据...')}</div>
+              </>
+            ) : layoutProcessing === 'processing' ? (
+              <>
+                <div className="w-10 h-10 border-3 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+                <div className="text-sm text-gray-600">{tt('正在整理布局中...')}</div>
+              </>
+            ) : (
+              <>
+                <div className="w-10 h-10 border-3 border-red-200 border-t-red-500 rounded-full animate-spin" />
+                <div className="text-sm text-gray-600">{tt('数量太多，已恢复原样')}</div>
+              </>
+            )}
+            <div className="text-[11px] text-gray-400 max-w-[280px] text-center leading-tight">
+              {tt('如果10秒内无反应，说明计算复杂，可能导致浏览器卡顿，建议关闭该页面')}
+            </div>
           </div>
         </div>
       )}
